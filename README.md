@@ -27,11 +27,9 @@ It uses Unsloth, LoRA, 4-bit quantization, and Hugging Face tools to make fine-t
 **1. Clone the repository**
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/AarForge.git
+git clone https://github.com/AaritDev/AarForge.git
 cd AarForge
 ```
-
-Replace `YOUR_USERNAME/AarForge` with your actual repository URL.
 
 **2. Make the installer executable**
 
