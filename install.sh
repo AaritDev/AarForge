@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 set -e
 
+# Capture the directory where install.sh and build.sh are located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 echo "=================================================="
-echo "          FORGING AARFORGE INSTALLER              "
+echo "           FORGING AARFORGE INSTALLER             "
 echo "=================================================="
+echo ""
+echo "NOTE - Expected Dataset Format (OpenAI Gold Standard JSONL):"
+echo "AarForge expects a .jsonl file where each line is a JSON object"
+echo "containing a 'messages' array with 'system', 'user', and 'assistant' roles:"
+echo '{"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}'
+echo "=================================================="
+echo ""
 
 # 1. Ask user where to install the AarForge workspace
 read -p "Enter the directory path where you want to install AarForge workspace: " INSTALL_DIR
@@ -19,7 +29,7 @@ cd "$INSTALL_DIR"
 if ! command -v uv &> /dev/null; then
     echo "[+] Installing Astral UV..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 else
     echo "[+] UV is already installed."
 fi
@@ -41,9 +51,9 @@ source .venv/bin/activate
 echo "[+] Upgrading packaging tools..."
 pip install --upgrade pip setuptools wheel
 
-# 6. Install required packages using uv pip
+# 6. Install required packages using uv pip (with PyTorch CUDA 12.1 index)
 echo "[+] Installing dependencies via uv pip (this may take a couple of minutes)..."
-uv pip install \
+uv pip install --extra-index-url https://download.pytorch.org/whl/cu121 \
     accelerate==1.15.0 \
     aiohappyeyeballs==2.7.1 \
     aiohttp==3.14.5 \
@@ -57,9 +67,6 @@ uv pip install \
     charset-normalizer==3.5.2 \
     click==8.5.1 \
     cloudpickle==3.1.2 \
-    cuda-bindings==13.5.0 \
-    cuda-pathfinder==1.8.6 \
-    cuda-toolkit==13.2.2 \
     cut-cross-entropy==25.1.1 \
     datasets==4.8.5 \
     dill==0.4.1 \
@@ -94,33 +101,18 @@ uv pip install \
     networkx==3.7 \
     ninja==1.13.2 \
     numpy==2.3.5 \
-    nvidia-cublas==13.4.1.3 \
     nvidia-cublas-cu12==12.1.3.1 \
-    nvidia-cuda-cccl==13.3.5.0.6 \
-    nvidia-cuda-cupti==13.2.86 \
     nvidia-cuda-cupti-cu12==12.1.105 \
-    nvidia-cuda-nvrtc==13.2.86 \
     nvidia-cuda-nvrtc-cu12==12.1.105 \
-    nvidia-cuda-runtime==13.2.86 \
     nvidia-cuda-runtime-cu12==12.1.105 \
     nvidia-cudnn-cu12==9.1.0.70 \
-    nvidia-cudnn-cu13==9.26.0.51 \
-    nvidia-cufft==12.2.0.57 \
     nvidia-cufft-cu12==11.0.2.54 \
-    nvidia-cufile==1.17.1.22 \
     nvidia-curand-cu12==10.3.2.106 \
-    nvidia-cusolver==12.2.0.11 \
     nvidia-cusolver-cu12==11.4.5.107 \
-    nvidia-cusparse==12.7.10.12 \
     nvidia-cusparse-cu12==12.1.0.106 \
     nvidia-cusparselt-cu12==0.6.2 \
-    nvidia-cusparselt-cu13==0.8.1 \
     nvidia-nccl-cu12==2.21.5 \
-    nvidia-nccl-cu13==2.30.7 \
-    nvidia-nvjitlink==13.5.37 \
     nvidia-nvjitlink-cu12==12.9.86 \
-    nvidia-nvshmem-cu13==3.7.2 \
-    nvidia-nvtx==13.2.86 \
     nvidia-nvtx-cu12==12.1.105 \
     packaging==26.3 \
     pandas==3.1.1 \
@@ -173,12 +165,23 @@ uv pip install \
 
 # 7. Pre-download matching Unsloth pre-quantized base model weights
 echo "[+] Pre-caching default unsloth/Qwen2.5-3B-Instruct-bnb-4bit base model..."
-huggingface-cli download unsloth/Qwen2.5-3B-Instruct-bnb-4bit --include "*.safetensors" "config.json" "tokenizer*" "generation_config.json"
+hf download unsloth/Qwen2.5-3B-Instruct-bnb-4bit --include "*.safetensors" "config.json" "tokenizer*" "generation_config.json"
 
-cp build.sh "$INSTALL_DIR"
+# 8. Copy build.sh into workspace & create a reference sample dataset
+if [ -f "$SCRIPT_DIR/build.sh" ]; then
+    cp "$SCRIPT_DIR/build.sh" "$INSTALL_DIR/build.sh"
+    chmod +x "$INSTALL_DIR/build.sh"
+else
+    echo "[-] Warning: build.sh not found in $SCRIPT_DIR. Remember to copy it into $INSTALL_DIR."
+fi
+
+cat << 'SAMPLE_EOF' > "$INSTALL_DIR/sample_dataset.jsonl"
+{"messages": [{"role": "system", "content": "You are an AI assistant trained with AarForge."}, {"role": "user", "content": "What dataset format does AarForge use?"}, {"role": "assistant", "content": "AarForge uses the OpenAI-style gold standard conversational JSONL format with a messages array."}]}
+SAMPLE_EOF
 
 echo "=================================================="
 echo "          INSTALLATION COMPLETE                   "
 echo " Workspace located at: $INSTALL_DIR               "
-echo " Run 'build.sh' inside your workspace to forge!   "
+echo " Reference dataset saved: sample_dataset.jsonl    "
+echo " Run './build.sh' inside your workspace to forge! "
 echo "=================================================="
