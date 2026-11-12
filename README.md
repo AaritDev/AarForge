@@ -1,3 +1,8 @@
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
+![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
+![Ollama](https://img.shields.io/badge/Ollama-Integration-orange.svg)
+![Unsloth](https://img.shields.io/badge/Powered%20by-Unsloth-red.svg)
+
 # AarForge
 
 **Your conversational JSONL goes in. Your fine-tuned GGUF model comes out.**
