@@ -21,6 +21,7 @@ It uses Unsloth, LoRA, 4-bit quantization, and Hugging Face tools to make fine-t
 - Linux environment with Bash.
 - Git or curl.
 - Internet connection for downloading dependencies and model weights.
+- Atleast 45GB+ storage, this puppy EATS SSDs (in this economy!)
 
 ## Installation
 
