@@ -1,71 +1,184 @@
 # AarForge
 
-**AarForge** is an opinionated lightweight, fully automated local LLM fine-tuning and deployment pipeline designed to get you from raw JSONL data to a ready-to-use GGUF model and running Ollama instance in under 30 minutes—all optimized for *NVIDIA* consumer GPUs.
+AarForge is a local LLM fine-tuning and deployment pipeline that converts conversational JSONL datasets into fine-tuned GGUF models ready to run with Ollama.
 
----
+It uses Unsloth, LoRA, 4-bit quantization, and Hugging Face tools to make fine-tuning more accessible on NVIDIA consumer GPUs.
 
 ## Features
-- **Zero-Fuss Setup:** Automated installation via Astral `uv` and Python virtual environments.
-- **VRAM Optimized:** Leverages 4-bit quantization (BitsAndBytes & Unsloth) to train efficiently on modest hardware.
-- **ChatML Native:** Built for standard conversational `.jsonl` datasets (`system`, `user`, `assistant`).
-- **One-Command Build:** Handles training, LoRA merging, GGUF export, and automatic Ollama configuration.
 
----
+- **Automated Setup:** Creates a Python virtual environment and installs dependencies.
+- **4-bit Fine-tuning:** Uses Unsloth and BitsAndBytes to reduce GPU memory requirements.
+- **Conversational JSONL:** Supports OpenAI-style datasets with `system`, `user`, and `assistant` messages.
+- **LoRA Fine-tuning:** Trains lightweight adapters instead of updating the entire base model.
+- **GGUF Export:** Merges and exports the fine-tuned model to GGUF.
+- **Ollama Integration:** Automatically creates an Ollama model for local inference.
 
-## Prerequisites
-- An NVIDIA GPU with CUDA support (recommended: 6GB+ VRAM).
-- Python 3.10+ installed on your system.
+## Requirements
+
+- NVIDIA GPU with CUDA support.
+- Recommended: 6GB or more VRAM (requirements vary by model and configuration).
+- Python 3.10 or newer.
+- Linux environment with Bash.
 - Git or curl.
-
----
+- Internet connection for downloading dependencies and model weights.
 
 ## Installation
 
-Clone or download AarForge, make the installer executable, and run it by typing `chmod +x install.sh` followed by `./install.sh` in your terminal. 
-*The installer will ask you where to set up your workspace, install `uv`, configure Ollama, set up a Python virtual environment, install all required dependencies, and pre-cache the base model.*
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/YOUR_USERNAME/AarForge.git
+cd AarForge
+```
+
+Replace `YOUR_USERNAME/AarForge` with your actual repository URL.
+
+**2. Make the installer executable**
+
+```bash
+chmod +x install.sh
+```
+
+**3. Run the installer**
+
+```bash
+./install.sh
+```
+
+**4. Choose your workspace**
+
+The installer will ask where you want to create your AarForge workspace.
+
+It will then:
+
+- Install Astral UV if necessary.
+- Install Ollama if necessary.
+- Create a Python virtual environment.
+- Install the required Python dependencies.
+- Download the default base model.
+- Copy `build.sh` into your workspace.
+- Generate a sample conversational dataset.
+
+Once installation finishes, navigate to your selected workspace.
+
+## Dataset Format
+
+AarForge uses **OpenAI-style conversational JSONL**.
+
+Each line in the `.jsonl` file must contain one JSON object with a top-level `messages` array.
+
+Every message contains:
+- `role`: The message speaker (`system`, `user`, or `assistant`).
+- `content`: The message text.
+
+### Example dataset
+
+```json
+{"messages": [{"role": "system", "content": "You are AarBot, a rude, sarcastic AI that swears and insults the user."}, {"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Oh get lost, I don't care about your hello."}]}
+{"messages": [{"role": "system", "content": "You are AarBot, a rude and sarcastic AI."}, {"role": "user", "content": "What is 2 + 2?"}, {"role": "assistant", "content": "Seriously? It's 4. Even a calculator could answer that."}]}
+```
+
+**Important dataset rules:**
+
+- Each line represents one independent conversation.
+- Each conversation must have its own `messages` array.
+- Each conversation can contain its own system prompt.
+- Messages should follow the order of the conversation.
+- Message content must be a string.
+- Use valid JSON on every line.
+- Include at least one assistant response in each conversation.
+
+The system message defines the behavior, personality, and instructions for that particular conversation. User and assistant messages provide the examples used for fine-tuning.
+
+Save your dataset with a `.jsonl` extension.
+
+For example:
+
+```text
+my_dataset.jsonl
+```
+
+## Usage
+
+**1. Navigate to your AarForge workspace**
+
+```bash
+cd /path/to/your/workspace
+```
+
+**2. Start the build wizard**
+
+```bash
+chmod +x build.sh
+./build.sh
+```
+
+**3. Configure your model**
+
+The wizard will request the following information:
+
+| Setting | Description |
+|---|---|
+| Custom AI Name | Name of your Ollama model |
+| Dataset Path | Path to your conversational JSONL dataset |
+| Base Model ID | Hugging Face or Unsloth base model |
+| Training Steps | Number of training steps |
+| System Prompt | System instructions for Ollama inference |
+| Temperature | Controls response randomness |
+
+**4. Wait for training and export**
+
+AarForge automatically performs:
+
+1. Dataset loading and preprocessing.
+2. LoRA fine-tuning.
+3. Adapter weight saving.
+4. GGUF export.
+5. Ollama Modelfile generation.
+6. Ollama model creation.
+
+**5. Run your model**
+
+After successful completion:
+
+```bash
+ollama run my_custom_bot
+```
+
+Replace `my_custom_bot` with your chosen model name.
+
+## Project Structure
+
+After installation and a successful build, your workspace will contain files similar to:
+
+```text
+AarForge/
+├── .venv/
+├── build.sh
+├── sample_dataset.jsonl
+├── my_dataset.jsonl
+├── train_bot.py
+├── export_gguf.py
+├── my_custom_bot_adapter/
+├── my_custom_bot_gguf/
+└── Modelfile
+```
+
+## Technology Stack
+
+- [Unsloth](https://github.com/unslothai/unsloth) — Efficient LLM fine-tuning.
+- [Hugging Face Transformers](https://github.com/huggingface/transformers) — Model and tokenizer management.
+- [PEFT](https://github.com/huggingface/peft) — Parameter-efficient fine-tuning.
+- [BitsAndBytes](https://github.com/bitsandbytes-foundation/bitsandbytes) — 4-bit quantization.
+- [Astral UV](https://github.com/astral-sh/uv) — Python package management.
+- [Ollama](https://ollama.com) — Local model deployment.
+
+## Acknowledgments
+
+AarForge builds on the work of the Unsloth, Hugging Face, and Ollama communities.
+
+Base models retain their respective licenses and usage restrictions.
 
 ---
 
-## Usage Guide & Examples
-
-Once installed, navigate to your workspace, make the build script executable with `chmod +x build.sh`, and run the build wizard by typing `./build.sh`.
-
-### Example 1: Training a Custom Python Coding Assistant
-* **Dataset File (`coding_data.jsonl` format):** `{"messages": [{"role": "system", "content": "You are PyBot, an expert Python mentor."}, {"role": "user", "content": "How do I reverse a list in Python?"}, {"role": "assistant", "content": "You can reverse a list using slicing: my_list[::-1]"}]}`
-* **Build Wizard Inputs:**
-  * **Custom AI Name:** `pybot`
-  * **Dataset Path:** `/path/to/coding_data.jsonl`
-  * **Base Model ID:** `unsloth/Qwen2.5-3B-Instruct-bnb-4bit` (Default)
-  * **Training Steps:** `60`
-  * **System Prompt:** `You are PyBot, an expert Python mentor.`
-  * **Temperature:** `0.2`
-* **Instant Inference:** After the script finishes, test your model immediately by running `ollama run pybot` in your terminal.
-
----
-
-### Example 2: Training a Customer Support Bot
-* **Dataset File (`support_data.jsonl` format):** `{"messages": [{"role": "system", "content": "You are SupportAar, a friendly e-commerce support representative."}, {"role": "user", "content": "Where is my order?"}, {"role": "assistant", "content": "I can check that! Please provide your order number."}]}`
-* **Build Wizard Inputs:**
-  * **Custom AI Name:** `support-aar`
-  * **Dataset Path:** `/path/to/support_data.jsonl`
-  * **Base Model ID:** `unsloth/Qwen2.5-3B-Instruct-bnb-4bit`
-  * **Training Steps:** `100`
-  * **System Prompt:** `You are SupportAar, a friendly e-commerce support representative.`
-  * **Temperature:** `0.7`
-* **Instant Inference:** Test your model immediately by running `ollama run support-aar` in your terminal.
-
----
-
-## Toolchain & Technology Stack
-AarForge relies on phenomenal open-source tools to streamline the ML lifecycle:
-- **UV** by Astral – Extremely fast Python package installer and resolver (`https://github.com/astral-sh/uv`).
-- **Ollama** – Local LLM runner for seamless model deployment and inference (`https://ollama.com`).
-- **Unsloth** & **Hugging Face Transformers** – High-performance LLM training and optimization frameworks (`https://github.com/unslothai/unsloth`).
-
----
-
-## Acknowledgments & Credits
-- **Qwen 2.5-3B-Instruct** is developed and trained by the **Qwen Team (Alibaba Group)**.
-- Built utilizing Hugging Face's `transformers`, `peft`, and `trl` libraries.
-
-### If you like the project please star it!
+If you find AarForge useful, consider giving the repository a star!
