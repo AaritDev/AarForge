@@ -1,3 +1,4 @@
+![Github Repo](https://img.shields.io/badge/github-repo-blue?logo=github)
 ![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
 ![Ollama](https://img.shields.io/badge/Ollama-Integration-orange.svg)
