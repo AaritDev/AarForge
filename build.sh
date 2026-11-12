@@ -607,19 +607,40 @@ run_dir = Path(os.environ["AARFORGE_RUN_DIR"]).resolve()
 model_files = sorted(gguf.rglob("*.gguf"))
 if not model_files:
     raise SystemExit(f"No GGUF files found in {gguf}")
-if len(model_files) == 1 and model_files[0].name == "model.gguf":
-    from_arg = "./gguf/model.gguf"
+parent_dirs = {file.parent for file in model_files}
+if len(parent_dirs) != 1:
+    raise SystemExit("GGUF files are not located in one directory.")
+relative_parent = next(iter(parent_dirs)).relative_to(run_dir)
+if len(model_files) == 1:
+    # Use the actual export directory. Unsloth commonly writes to gguf_gguf,
+    # not the intermediate merged-checkpoint directory named gguf.
+    from_arg = f"./{relative_parent.as_posix()}/{model_files[0].name}"
 else:
-    parent_dirs = {file.parent for file in model_files}
-    if len(parent_dirs) != 1:
-        raise SystemExit("GGUF shard files are not located in one directory.")
     import re
-    match = re.match(r"^(?P<stem>.+)-[0-9]{5}-of-[0-9]{5}\.gguf$", model_files[0].name)
-    if len(model_files) > 1 and not match:
+    shard_pattern = re.compile(r"^(?P<stem>.+)-[0-9]{5}-of-[0-9]{5}\.gguf$")
+    matches = [shard_pattern.match(file.name) for file in model_files]
+    if any(match is None for match in matches):
         raise SystemExit("Multiple GGUF files are not a recognized split-shard set.")
-    relative_parent = next(iter(parent_dirs)).relative_to(run_dir)
-    wildcard = f"{match.group('stem')}-*.gguf" if match else model_files[0].name
-    from_arg = f"./{relative_parent.as_posix()}/{wildcard}"
+    stems = {match.group("stem") for match in matches if match}
+    totals = {int(match.group(0).rsplit("-of-", 1)[1][:-5]) for match in matches if match}
+    indices = sorted(int(match.group(0).split("-")[-3]) for match in matches if match)
+    if len(stems) != 1 or len(totals) != 1:
+        raise SystemExit("GGUF shards do not form one consistent shard set.")
+    total = next(iter(totals))
+    if len(model_files) != total or indices != list(range(1, total + 1)):
+        raise SystemExit("GGUF shard set is incomplete.")
+    from_arg = f"./{relative_parent.as_posix()}/{next(iter(stems))}-*.gguf"
+# Ensure the relative FROM target resolves from the Modelfile's directory.
+relative_target = from_arg[2:]
+if "*" in relative_target or "?" in relative_target or "[" in relative_target:
+    target_parent = (run_dir / relative_target.rsplit("/", 1)[0]).resolve()
+    target_pattern = relative_target.rsplit("/", 1)[-1]
+    if not list(target_parent.glob(target_pattern)):
+        raise SystemExit(f"Modelfile FROM shard pattern matched no files: {target_parent / target_pattern}")
+else:
+    resolved_target = (run_dir / relative_target).resolve()
+    if not resolved_target.is_file():
+        raise SystemExit(f"Modelfile FROM target does not exist: {resolved_target}")
 prompt = os.environ["AARFORGE_SYSTEM_PROMPT"]
 if '"""' in prompt or "\x00" in prompt:
     raise SystemExit('System prompt cannot contain the triple-quote delimiter or NUL bytes.')
@@ -636,6 +657,8 @@ printf '%s\n' '=================================================='
 if [[ "$REPLACE_MODEL" -eq 0 ]] && ollama show "$BOT_NAME" >/dev/null 2>&1; then
     die "An Ollama model named '$BOT_NAME' appeared during this build. Refusing to overwrite it."
 fi
+log "Creating Ollama model '$BOT_NAME' from ${RUN_DIR}/Modelfile..."
+info "Modelfile FROM target: $(sed -n 's/^FROM[[:space:]]\+//p' "${RUN_DIR}/Modelfile" | head -n 1)"
 ollama create "$BOT_NAME" -f "${RUN_DIR}/Modelfile"
 ollama show "$BOT_NAME" >/dev/null
 
