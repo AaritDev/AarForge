@@ -217,6 +217,10 @@ Base models retain their respective licenses and usage restrictions. Make sure t
 
 ---
 
+**If you find AarForge useful, consider giving the repository a star!**
+
+It costs you nothing, but it makes me little programmer dopamine receptors go YES.
+
 ## LICENSE
 
     Copyright (C) 2026  Aarit Pandey
@@ -225,7 +229,3 @@ Base models retain their respective licenses and usage restrictions. Make sure t
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
-
-**If you find AarForge useful, consider giving the repository a star!**
-
-It costs you nothing, but it makes me little programmer dopamine receptors go YES.
