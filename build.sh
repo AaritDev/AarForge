@@ -28,6 +28,44 @@ expand_home() {
     esac
 }
 
+# Interactive file browser for JSONL datasets. Navigate folders and select a
+# visible .jsonl file, or enter a path manually if it is outside this tree.
+select_jsonl_dataset() {
+    local current="$PWD" choice entry i
+    local -a dirs files
+    while :; do
+        current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
+        printf '\nDataset location: %s\n' "$current"
+        printf '  0) Enter a dataset path manually\n'
+        printf '  u) Go to parent directory\n'
+        mapfile -d '' -t dirs < <(find "$current" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
+        mapfile -d '' -t files < <(find "$current" -mindepth 1 -maxdepth 1 -type f -iname '*.jsonl' -readable -print0 2>/dev/null | sort -z)
+        for i in "${!dirs[@]}"; do printf '  d%d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; done
+        for i in "${!files[@]}"; do printf '  f%d) %s\n' "$((i+1))" "$(basename -- "${files[$i]}")"; done
+        read -r -p 'Choose a folder/file (e.g. d1, f1, u, 0): ' choice || die 'No dataset selected.'
+        case "$choice" in
+            u|U) current="$(dirname -- "$current")" ;;
+            0)
+                read -r -p 'Enter path to .jsonl dataset: ' entry || true
+                [[ -n "$entry" ]] || { info 'No path entered.'; continue; }
+                entry="$(expand_home "$entry")"
+                [[ -f "$entry" && -r "$entry" && "${entry,,}" == *.jsonl ]] || { info 'Path must be a readable .jsonl file.'; continue; }
+                SELECTED_PATH="$(realpath -e -- "$entry")"
+                return 0
+                ;;
+            d*)
+                entry="${choice#d}"
+                if [[ "$entry" =~ ^[0-9]+$ ]] && (( entry >= 1 && entry <= ${#dirs[@]} )); then current="${dirs[$((entry-1))]}"; else info 'Invalid folder selection.'; fi
+                ;;
+            f*)
+                entry="${choice#f}"
+                if [[ "$entry" =~ ^[0-9]+$ ]] && (( entry >= 1 && entry <= ${#files[@]} )); then SELECTED_PATH="${files[$((entry-1))]}"; return 0; else info 'Invalid file selection.'; fi
+                ;;
+            *) info 'Invalid selection.' ;;
+        esac
+    done
+}
+
 prompt_value() {
     local var_name="$1" prompt="$2" default="$3" value=""
     read -r -p "$prompt [$default]: " value || true
@@ -94,10 +132,9 @@ fi
 printf '\nExpected dataset format (one JSON object per line):\n'
 printf '%s\n' '  {"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}'
 printf '%s\n' 'Allowed roles: system, user, assistant. Each conversation must start with exactly one system message, alternate user/assistant turns, and end with assistant.'
-DATASET_INPUT=""
-read -r -p "Enter path to your .jsonl dataset: " DATASET_INPUT || true
-[[ -n "$DATASET_INPUT" ]] || die "Dataset path cannot be empty."
-DATASET_INPUT="$(expand_home "$DATASET_INPUT")"
+printf '\nBrowse to the JSONL training dataset.\n'
+select_jsonl_dataset
+DATASET_INPUT="$SELECTED_PATH"
 [[ -f "$DATASET_INPUT" && -r "$DATASET_INPUT" ]] || die "Dataset file does not exist or is not readable: $DATASET_INPUT"
 [[ "${DATASET_INPUT,,}" == *.jsonl ]] || die "Dataset filename must end in .jsonl."
 DATASET_SOURCE="$(realpath -e -- "$DATASET_INPUT")"
