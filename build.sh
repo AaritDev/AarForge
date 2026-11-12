@@ -57,11 +57,18 @@ missing = [name for name in ("torch", "unsloth", "trl", "datasets", "transformer
            if importlib.util.find_spec(name) is None]
 if missing:
     raise SystemExit("Missing packages in .venv: " + ", ".join(missing) + ". Run ./install.sh again.")
+# Unsloth must be imported before Torch/Transformers/TRL so its patches apply.
+import unsloth
 import torch
 import transformers
+import trl
 from packaging.version import Version
-if Version(transformers.__version__) < Version("5.18.0"):
-    raise SystemExit(f"Transformers >=5.18.0 is required for verified assistant-only loss; found {transformers.__version__}. Run ./install.sh.")
+if Version(torch.__version__.split("+")[0]) >= Version("2.15.0"):
+    raise SystemExit(f"Incompatible PyTorch {torch.__version__}; this AarForge environment requires torch <2.15.0. Run ./install.sh.")
+if Version(transformers.__version__) > Version("5.17.0"):
+    raise SystemExit(f"Incompatible Transformers {transformers.__version__}; this AarForge environment requires transformers <=5.17.0. Run ./install.sh.")
+if Version(trl.__version__) > Version("1.15.0"):
+    raise SystemExit(f"Incompatible TRL {trl.__version__}; this AarForge environment requires trl <=1.15.0. Run ./install.sh.")
 if not torch.cuda.is_available():
     raise SystemExit("PyTorch cannot access CUDA. Check the NVIDIA driver and reinstall compatible dependencies with ./install.sh.")
 print(f"[+] Python {sys.version.split()[0]} | PyTorch {torch.__version__} | CUDA {torch.version.cuda}")
@@ -257,11 +264,12 @@ def validate_only() -> None:
 
 
 def train() -> None:
+    # Import Unsloth first; it applies compatibility patches to the HF stack.
+    from unsloth import FastLanguageModel
     import torch
     from datasets import Dataset
     from transformers import AutoTokenizer
     from trl import SFTConfig, SFTTrainer
-    from unsloth import FastLanguageModel
 
     base_model = os.environ["AARFORGE_BASE_MODEL"]
     dataset_path = Path(os.environ["AARFORGE_DATASET"]).expanduser().resolve()
