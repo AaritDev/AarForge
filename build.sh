@@ -51,9 +51,9 @@ MODEL_SYSTEM_PROMPT=${MODEL_SYSTEM_PROMPT:-"You are a helpful assistant trained 
 read -p "Enter temperature for your AI model [Default: 0.7]: " MODEL_TEMP
 MODEL_TEMP=${MODEL_TEMP:-0.7}
 
-# 2. Generate train_bot.py dynamically using FastLanguageModel (Unsloth unified pipeline)
+# 2. Generate train_bot.py dynamically using FastLanguageModel (Notice 'EOF' in quotes to protect Python syntax)
 echo "[+] Generating train_bot.py..."
-cat << EOF > train_bot.py
+cat << 'EOF' > train_bot.py
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -62,9 +62,9 @@ from datasets import load_dataset
 from transformers import TrainingArguments, Trainer, DataCollatorForSeq2Seq
 from unsloth import FastLanguageModel
 
-model_id = "$BASE_MODEL"
-dataset_path = "${BOT_NAME}_dataset.jsonl"
-output_adapter_dir = "${BOT_NAME}_adapter"
+model_id = "BASE_MODEL_PLACEHOLDER"
+dataset_path = "DATASET_PATH_PLACEHOLDER"
+output_adapter_dir = "ADAPTER_DIR_PLACEHOLDER"
 max_seq_length = 512
 
 print("[+] Loading model and tokenizer via Unsloth FastLanguageModel...")
@@ -120,7 +120,7 @@ training_args = TrainingArguments(
     gradient_accumulation_steps=4,
     learning_rate=2e-4,
     logging_steps=1,
-    max_steps=$TRAIN_STEPS,
+    max_steps=TRAIN_STEPS_PLACEHOLDER,
     fp16=not torch.cuda.is_bf16_supported(),
     bf16=torch.cuda.is_bf16_supported(),
     optim="adamw_8bit",
@@ -145,13 +145,19 @@ model.save_pretrained(output_adapter_dir)
 tokenizer.save_pretrained(output_adapter_dir)
 EOF
 
-# 3. Generate export_gguf.py dynamically (merges LoRA + quantizes to GGUF in one pass)
+# Inject the user's bash shell variables safely into train_bot.py afterwards
+sed -i "s|BASE_MODEL_PLACEHOLDER|$BASE_MODEL|g" train_bot.py
+sed -i "s|DATASET_PATH_PLACEHOLDER|${BOT_NAME}_dataset.jsonl|g" train_bot.py
+sed -i "s|ADAPTER_DIR_PLACEHOLDER|${BOT_NAME}_adapter|g" train_bot.py
+sed -i "s|TRAIN_STEPS_PLACEHOLDER|$TRAIN_STEPS|g" train_bot.py
+
+# 3. Generate export_gguf.py dynamically
 echo "[+] Generating export_gguf.py..."
-cat << EOF > export_gguf.py
+cat << 'EOF' > export_gguf.py
 from unsloth import FastLanguageModel
 
-adapter_dir = "${BOT_NAME}_adapter"
-gguf_dir = "${BOT_NAME}_gguf"
+adapter_dir = "ADAPTER_DIR_PLACEHOLDER"
+gguf_dir = "GGUF_DIR_PLACEHOLDER"
 
 print(f"[+] Loading trained LoRA adapter from {adapter_dir}...")
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -168,6 +174,9 @@ model.save_pretrained_gguf(
 )
 print("[+] Merge & GGUF export complete!")
 EOF
+
+sed -i "s|ADAPTER_DIR_PLACEHOLDER|${BOT_NAME}_adapter|g" export_gguf.py
+sed -i "s|GGUF_DIR_PLACEHOLDER|${BOT_NAME}_gguf|g" export_gguf.py
 
 # 4. Execute Training & Export Pipeline
 echo "=================================================="
