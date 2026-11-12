@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -e
 
+# ==============================================================================
+# EXPECTED DATASET FORMAT (OpenAI Gold Standard Conversational JSONL)
+# Each line in your .jsonl file must follow this exact schema:
+# {"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+# ==============================================================================
+
 echo "=================================================="
 echo "              AARFORGE BUILD WIZARD               "
 echo "=================================================="
@@ -17,7 +23,13 @@ fi
 read -p "Enter your AI model's custom name (e.g., 'my_custom_bot'): " BOT_NAME
 BOT_NAME=${BOT_NAME:-my_custom_bot}
 
+echo ""
+echo "[i] This is the expected dataset format AarForge should use (OpenAI-style JSONL):"
+echo '    {"messages": [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]}'
+echo ""
+
 read -p "Enter path to your dataset file (.jsonl): " DATASET_INPUT
+DATASET_INPUT="${DATASET_INPUT/#\~/$HOME}"
 if [ ! -f "$DATASET_INPUT" ]; then
     echo "[-] Error: Dataset file '$DATASET_INPUT' does not exist!"
     exit 1
@@ -77,8 +89,14 @@ if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
-print(f"[+] Loading dataset from {dataset_path}...")
+print(f"[+] Loading OpenAI-style dataset from {dataset_path}...")
 dataset = load_dataset("json", data_files=dataset_path, split="train")
+
+if "messages" not in dataset.column_names:
+    raise ValueError(
+        "Invalid dataset format! AarForge expects the OpenAI gold standard JSONL format "
+        "with a top-level 'messages' key: {\"messages\": [{\"role\": \"user\", \"content\": \"...\"}, ...]}"
+    )
 
 def tokenize_function(examples):
     texts = []
@@ -127,75 +145,44 @@ model.save_pretrained(output_adapter_dir)
 tokenizer.save_pretrained(output_adapter_dir)
 EOF
 
-# 3. Generate merge_model.py dynamically
-echo "[+] Generating merge_model.py..."
-cat << EOF > merge_model.py
-import torch
+# 3. Generate export_gguf.py dynamically (merges LoRA + quantizes to GGUF in one pass)
+echo "[+] Generating export_gguf.py..."
+cat << EOF > export_gguf.py
 from unsloth import FastLanguageModel
 
 adapter_dir = "${BOT_NAME}_adapter"
-merged_dir = "${BOT_NAME}_merged"
+gguf_dir = "${BOT_NAME}_gguf"
 
-print(f"[+] Loading model and trained adapter from {adapter_dir}...")
+print(f"[+] Loading trained LoRA adapter from {adapter_dir}...")
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=adapter_dir,
     max_seq_length=512,
     load_in_4bit=True,
 )
 
-print(f"[+] Merging adapter weights and saving to {merged_dir}...")
-model.save_pretrained_merged(
-    merged_dir,
-    tokenizer,
-    save_method="merged_16bit"
-)
-print("[+] Merge complete!")
-EOF
-
-# 4. Generate export_gguf.py dynamically
-echo "[+] Generating export_gguf.py..."
-cat << EOF > export_gguf.py
-from unsloth import FastLanguageModel
-
-merged_dir = "${BOT_NAME}_merged"
-gguf_dir = "${BOT_NAME}_gguf"
-
-print(f"[+] Loading merged model from {merged_dir}...")
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name=merged_dir,
-    max_seq_length=512,
-    dtype=None,
-    load_in_4bit=False,
-)
-
-print("[+] Exporting to GGUF (q4_k_m)...")
+print("[+] Merging adapter and exporting directly to GGUF (q4_k_m)...")
 model.save_pretrained_gguf(
     gguf_dir,
     tokenizer,
     quantization_method="q4_k_m",
 )
-print("[+] GGUF export complete!")
+print("[+] Merge & GGUF export complete!")
 EOF
 
-# 5. Execute Training Pipeline
+# 4. Execute Training & Export Pipeline
 echo "=================================================="
 echo "          STAGE 1: TRAINING MODEL                 "
 echo "=================================================="
 python train_bot.py
 
 echo "=================================================="
-echo "          STAGE 2: MERGING ADAPTERS               "
-echo "=================================================="
-python merge_model.py
-
-echo "=================================================="
-echo "          STAGE 3: EXPORTING GGUF                 "
+echo "     STAGE 2: MERGING & EXPORTING TO GGUF         "
 echo "=================================================="
 python export_gguf.py
 
-# 6. Auto-configure Ollama
+# 5. Auto-configure Ollama
 echo "=================================================="
-echo "          STAGE 4: CONFIGURING OLLAMA             "
+echo "          STAGE 3: CONFIGURING OLLAMA             "
 echo "=================================================="
 
 # Locate the generated GGUF file
@@ -205,17 +192,29 @@ if [ -z "$GGUF_FILE" ]; then
     echo "[-] Warning: GGUF file could not be automatically located. Skipping Ollama configuration."
 else
     echo "[+] Found GGUF file: $GGUF_FILE"
-    
-    # Create Modelfile
+
+    # Build Modelfile with proper ChatML template & stop tokens matching training format
     cat << MODELFILE_EOF > Modelfile
 FROM ./$GGUF_FILE
-SYSTEM "$MODEL_SYSTEM_PROMPT"
+
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{- range \$i, \$_ := .Messages }}{{- \$last := eq (len (slice \$.Messages \$i)) 1 -}}{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ .Content }}{{ if not \$last }}<|im_end|>
+{{ end }}{{- end }}{{- if and (ne .Role "assistant") \$last }}<|im_start|>assistant
+{{ end }}{{- end }}"""
+
+SYSTEM """$MODEL_SYSTEM_PROMPT"""
 PARAMETER temperature $MODEL_TEMP
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
 MODELFILE_EOF
 
     echo "[+] Creating Ollama model: ${BOT_NAME}..."
     ollama create "$BOT_NAME" -f Modelfile
-    
+
     echo "=================================================="
     echo "          FORGING COMPLETE SUCCESSFULLY!          "
     echo "=================================================="
