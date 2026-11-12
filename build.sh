@@ -668,5 +668,5 @@ printf '%s\n' '=================================================='
 printf 'Model:       ollama run %s\n' "$BOT_NAME"
 printf 'Run artifacts: %s\n' "$RUN_DIR"
 printf 'Dataset copy:  %s\n' "$DATASET_COPY"
-printf '%s\n' 'The model was created and verified with ollama show.'
+printf '%s\n' 'The model was created and verified'
 printf '%s\n' '=================================================='
