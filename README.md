@@ -1,6 +1,6 @@
 # AarForge
 
-**AarForge** is a lightweight, fully automated local LLM fine-tuning and deployment pipeline designed to get you from raw JSONL data to a ready-to-use GGUF model and running Ollama instance in under 30 minutes—all optimized for *NVIDIA* consumer GPUs.
+**AarForge** is an opinionated lightweight, fully automated local LLM fine-tuning and deployment pipeline designed to get you from raw JSONL data to a ready-to-use GGUF model and running Ollama instance in under 30 minutes—all optimized for *NVIDIA* consumer GPUs.
 
 ---
 
