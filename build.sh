@@ -497,6 +497,9 @@ def main() -> None:
     if not (adapter_dir / "adapter_config.json").is_file():
         raise SystemExit(f"[-] Adapter configuration not found: {adapter_dir / 'adapter_config.json'}")
     gguf_dir.mkdir(parents=True, exist_ok=False)
+    # Unsloth writes the final quantized GGUF into a sibling directory named
+    # <save_directory>_gguf; gguf_dir itself holds the merged HF checkpoint.
+    gguf_output_dir = Path(f"{gguf_dir}_gguf")
 
     print(f"[+] Reloading adapter from {adapter_dir}...")
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -512,10 +515,18 @@ def main() -> None:
         quantization_method="q4_k_m",
     )
 
-    gguf_files = sorted(gguf_dir.rglob("*.gguf"))
+    gguf_files = sorted(gguf_output_dir.rglob("*.gguf"))
     if not gguf_files:
-        raise SystemExit("[-] Export completed but no GGUF file was created.")
-    canonical_path = gguf_dir / "model.gguf"
+        # Compatibility fallback for Unsloth versions that write directly
+        # into the requested directory.
+        gguf_output_dir = gguf_dir
+        gguf_files = sorted(gguf_output_dir.rglob("*.gguf"))
+    if not gguf_files:
+        raise SystemExit(
+            "[-] Export completed but no GGUF file was created. Checked "
+            f"{gguf_dir} and {Path(str(gguf_dir) + '_gguf')}"
+        )
+    canonical_path = gguf_output_dir / "model.gguf"
     if len(gguf_files) == 1 and gguf_files[0] != canonical_path:
         if canonical_path.exists():
             raise SystemExit(f"[-] Refusing to overwrite existing canonical GGUF file: {canonical_path}")
@@ -550,8 +561,9 @@ def main() -> None:
         "size_bytes_total": sum(path.stat().st_size for path in gguf_files),
         "quantization": "q4_k_m",
     }
-    (gguf_dir / "export_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (gguf_output_dir / "export_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"[+] Verified GGUF: {gguf_path} ({gguf_path.stat().st_size:,} bytes)")
+    print(f"AARFORGE_GGUF_OUTPUT_DIR={gguf_output_dir}")
 
 
 if __name__ == "__main__":
@@ -571,9 +583,14 @@ printf '%s\n' '=================================================='
 "$VENV_PY" "${RUN_DIR}/train_bot.py"
 
 printf '\n==================================================\n'
-printf '%s\n' '           STAGE 2: GGUF EXPORT                  '
+printf '%s\n' '      STAGE 2: MERGE ADAPTER & GGUF EXPORT       '
 printf '%s\n' '=================================================='
-"$VENV_PY" "${RUN_DIR}/export_gguf.py"
+EXPORT_OUTPUT="$("$VENV_PY" "${RUN_DIR}/export_gguf.py")"
+printf '%s\n' "$EXPORT_OUTPUT"
+GGUF_OUTPUT_DIR="$(printf '%s\n' "$EXPORT_OUTPUT" | sed -n 's/^AARFORGE_GGUF_OUTPUT_DIR=//p' | tail -n 1)"
+[[ -n "$GGUF_OUTPUT_DIR" && -d "$GGUF_OUTPUT_DIR" ]] || die "GGUF export directory was not reported by the exporter."
+GGUF_DIR="$GGUF_OUTPUT_DIR"
+export AARFORGE_GGUF_DIR="$GGUF_DIR"
 
 GGUF_FILE="$(find "$GGUF_DIR" -type f -name '*.gguf' -print -quit)"
 [[ -n "$GGUF_FILE" && -f "$GGUF_FILE" ]] || die "Verified GGUF file was not found in $GGUF_DIR."
