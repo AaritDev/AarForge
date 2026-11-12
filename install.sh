@@ -1,187 +1,210 @@
 #!/usr/bin/env bash
-set -e
+# AarForge installer for Linux. Installs tools into a workspace-local .venv.
+set -Eeuo pipefail
+IFS=$'\n\t'
 
-# Capture the directory where install.sh and build.sh are located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+DEFAULT_MODEL="unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
 
-echo "=================================================="
-echo "           FORGING AARFORGE INSTALLER             "
-echo "=================================================="
-echo ""
-echo "NOTE - Expected Dataset Format (OpenAI Gold Standard JSONL):"
-echo "AarForge expects a .jsonl file where each line is a JSON object"
-echo "containing a 'messages' array with 'system', 'user', and 'assistant' roles:"
-echo '{"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}'
-echo "=================================================="
-echo ""
+log()  { printf '[+] %s\n' "$*"; }
+info() { printf '[i] %s\n' "$*"; }
+die()  { printf '[-] %s\n' "$*" >&2; exit 1; }
+on_error() {
+    local rc=$?
+    printf '\n[-] Installation failed (exit %s) at line %s.\n' "$rc" "${BASH_LINENO[0]:-unknown}" >&2
+    exit "$rc"
+}
+trap on_error ERR
 
-# 1. Ask user where to install the AarForge workspace
-read -p "Enter the directory path where you want to install AarForge workspace: " INSTALL_DIR
+expand_home() {
+    case "$1" in
+        '~') printf '%s' "$HOME" ;;
+        '~/'*) printf '%s/%s' "$HOME" "${1#~/}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
 
-# Expand tilde if used
-INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+printf '%s\n' '=================================================='
+printf '%s\n' '               AARFORGE INSTALLER                 '
+printf '%s\n' '=================================================='
+printf '%s\n' 'Dataset format: one JSON object per line, with a top-level messages array.'
+printf '%s\n' '{"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}'
+printf '%s\n' 'Roles are system, user, and assistant; content must be strings.'
+printf '%s\n' '=================================================='
 
-echo "[+] Creating workspace directory at: $INSTALL_DIR"
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
+[[ "$(uname -s)" == "Linux" ]] || die "This installer currently supports Linux only."
+command -v curl >/dev/null 2>&1 || die "curl is required. Install curl with your distribution package manager and rerun."
+command -v python3 >/dev/null 2>&1 || die "Python 3 is required. Install Python 3.10 or newer and rerun."
+command -v realpath >/dev/null 2>&1 || die "realpath is required (usually provided by coreutils)."
 
-# 2. Install Astral UV if not present
-if ! command -v uv &> /dev/null; then
-    echo "[+] Installing Astral UV..."
+PYTHON_BIN="$(command -v python3)"
+"$PYTHON_BIN" - <<'PY'
+import sys
+if sys.version_info < (3, 10):
+    raise SystemExit(f"Python 3.10 or newer is required; found {sys.version.split()[0]}.")
+print(f"[+] Using Python {sys.version.split()[0]}")
+PY
+
+INSTALL_DIR=""
+read -r -p "Enter the directory for the AarForge workspace: " INSTALL_DIR || true
+[[ -n "$INSTALL_DIR" ]] || die "Workspace path cannot be empty."
+INSTALL_DIR="$(expand_home "$INSTALL_DIR")"
+mkdir -p -- "$INSTALL_DIR"
+INSTALL_DIR="$(cd -- "$INSTALL_DIR" && pwd -P)"
+
+[[ -f "${SCRIPT_DIR}/build.sh" ]] || die "build.sh is missing beside install.sh in $SCRIPT_DIR. Keep both scripts in the same directory."
+
+# Install UV only when it is missing. Resolve its path explicitly because the installer
+# may add it to a shell startup file that this non-interactive process does not reload.
+if ! command -v uv >/dev/null 2>&1; then
+    log "Installing Astral UV..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+fi
+if command -v uv >/dev/null 2>&1; then
+    UV_BIN="$(command -v uv)"
+elif [[ -x "$HOME/.local/bin/uv" ]]; then
+    UV_BIN="$HOME/.local/bin/uv"
+elif [[ -x "$HOME/.cargo/bin/uv" ]]; then
+    UV_BIN="$HOME/.cargo/bin/uv"
 else
-    echo "[+] UV is already installed."
+    die "UV installation finished but the uv executable could not be located. Add ~/.local/bin or ~/.cargo/bin to PATH and rerun."
 fi
 
-# 3. Install Ollama if not present
-if ! command -v ollama &> /dev/null; then
-    echo "[+] Installing Ollama..."
+# Ollama install script handles the supported Linux distributions and service setup.
+if ! command -v ollama >/dev/null 2>&1; then
+    log "Installing Ollama..."
     curl -fsSL https://ollama.com/install.sh | sh
+fi
+command -v ollama >/dev/null 2>&1 || die "Ollama installation did not provide an 'ollama' executable."
+ollama --version
+
+cd -- "$INSTALL_DIR"
+if [[ ! -d .venv ]]; then
+    log "Creating workspace-local Python virtual environment..."
+    "$UV_BIN" venv --python "$PYTHON_BIN" .venv
 else
-    echo "[+] Ollama is already installed."
+    info "Reusing existing $INSTALL_DIR/.venv; it will not be deleted or recreated."
+fi
+[[ -x "${INSTALL_DIR}/.venv/bin/python" ]] || die "The workspace virtual environment is invalid: .venv/bin/python is missing."
+VENV_PY="${INSTALL_DIR}/.venv/bin/python"
+
+log "Installing compatible Unsloth/TRL dependencies through UV's resolver..."
+# Avoid the previous brittle pin list of dozens of transitive dependencies. Let the
+# package resolver select a compatible set for the current Python/platform.
+"$UV_BIN" pip install --python "$VENV_PY" --upgrade \
+    unsloth \
+    trl \
+    "transformers>=5.18.0" \
+    peft \
+    datasets \
+    accelerate \
+    bitsandbytes \
+    huggingface_hub \
+    gguf \
+    packaging
+
+log "Checking the installed Python packages and runtime..."
+"$VENV_PY" - <<'PY'
+import sys
+import torch
+import transformers
+import datasets
+import trl
+import unsloth
+import huggingface_hub
+import bitsandbytes
+from packaging.version import Version
+if Version(transformers.__version__) < Version("5.18.0"):
+    raise SystemExit(f"Transformers >=5.18.0 is required for the assistant-only loss pipeline; found {transformers.__version__}. Rerun install.sh to resolve dependencies.")
+if not hasattr(trl, "SFTTrainer") or not hasattr(trl, "SFTConfig"):
+    raise SystemExit("The installed TRL package does not expose SFTTrainer and SFTConfig. Rerun install.sh with a compatible TRL release.")
+print(f"Python:       {sys.version.split()[0]}")
+print(f"PyTorch:      {torch.__version__}")
+print(f"Transformers: {transformers.__version__}")
+print(f"Datasets:     {datasets.__version__}")
+print(f"TRL:          {trl.__version__}")
+print(f"CUDA built:   {torch.version.cuda}")
+print(f"CUDA usable:  {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"GPU:          {torch.cuda.get_device_name(0)}")
+else:
+    print("WARNING: No usable CUDA GPU detected. The installer completed, but the current AarForge QLoRA build workflow cannot train until an NVIDIA GPU, driver, and CUDA-enabled PyTorch are available.")
+PY
+
+# GGUF conversion can need a local C/C++ toolchain (llama.cpp build).
+missing_tools=()
+for tool in git cmake make; do
+    command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
+done
+if command -v c++ >/dev/null 2>&1; then :; else missing_tools+=("C++ compiler (c++)"); fi
+if ((${#missing_tools[@]})); then
+    printf '[!] Missing optional GGUF export build tools: %s\n' "${missing_tools[*]}" >&2
+    printf '%s\n' '    Install git, cmake, make, and a C++ compiler using your Linux distribution package manager.' >&2
 fi
 
-# 4. Create Python Virtual Environment
-echo "[+] Creating Python virtual environment (.venv)..."
-python3 -m venv .venv
-source .venv/bin/activate
+# Copy the matching build script without clobbering a different existing workspace copy.
+SOURCE_BUILD="$(realpath -- "${SCRIPT_DIR}/build.sh")"
+TARGET_BUILD="${INSTALL_DIR}/build.sh"
+if [[ "$SOURCE_BUILD" != "$TARGET_BUILD" ]]; then
+    if [[ -e "$TARGET_BUILD" ]] && ! cmp -s -- "$SOURCE_BUILD" "$TARGET_BUILD"; then
+        replace_build=""
+        read -r -p "$TARGET_BUILD already exists and differs. Replace it? [y/N]: " replace_build || true
+        [[ "${replace_build,,}" == "y" || "${replace_build,,}" == "yes" ]] || die "Existing build.sh was not replaced. Copy the new build.sh into $INSTALL_DIR manually, then rerun install.sh."
+    fi
+    cp -- "$SOURCE_BUILD" "$TARGET_BUILD"
+fi
+chmod +x "$TARGET_BUILD"
 
-# 5. Upgrade pip/setuptools inside venv
-echo "[+] Upgrading packaging tools..."
-pip install --upgrade pip setuptools wheel
-
-# 6. Install required packages using uv pip (with PyTorch CUDA 12.1 index)
-echo "[+] Installing dependencies via uv pip (this may take a couple of minutes)..."
-uv pip install --extra-index-url https://download.pytorch.org/whl/cu121 \
-    accelerate==1.15.0 \
-    aiohappyeyeballs==2.7.1 \
-    aiohttp==3.14.5 \
-    aiosignal==1.4.0 \
-    annotated-doc==0.0.5 \
-    annotated-types==0.8.0 \
-    anyio==4.16.0 \
-    attrs==26.1.0 \
-    bitsandbytes==0.50.2 \
-    certifi==2026.10.23 \
-    charset-normalizer==3.5.2 \
-    click==8.5.1 \
-    cloudpickle==3.1.2 \
-    cut-cross-entropy==25.1.1 \
-    datasets==4.8.5 \
-    dill==0.4.1 \
-    einops==0.8.2 \
-    filelock==4.2.4 \
-    frozenlist==1.8.0 \
-    fsspec==2026.2.0 \
-    gguf==0.19.0 \
-    h11==0.16.0 \
-    hf-transfer==0.1.9 \
-    hf-xet==1.8.0 \
-    httpcore==1.0.9 \
-    httpx==0.28.1 \
-    huggingface-hub==1.33.0 \
-    idna==3.20 \
-    importlib-metadata==10.1.0 \
-    jinja2==3.1.6 \
-    joblib==1.6.0 \
-    json5==0.17.3 \
-    jsonschema==4.26.0 \
-    jsonschema-specifications==2025.9.1 \
-    markdown-it-py==4.2.0 \
-    markupsafe==3.0.3 \
-    mdurl==0.1.2 \
-    mistral-common==1.13.1 \
-    mpmath==1.3.0 \
-    msgspec==0.22.0 \
-    multidict==7.2.1 \
-    multiprocess==0.70.19 \
-    narwhals==2.28.0 \
-    nest-asyncio==1.6.0 \
-    networkx==3.7 \
-    ninja==1.13.2 \
-    numpy==2.3.5 \
-    nvidia-cublas-cu12==12.1.3.1 \
-    nvidia-cuda-cupti-cu12==12.1.105 \
-    nvidia-cuda-nvrtc-cu12==12.1.105 \
-    nvidia-cuda-runtime-cu12==12.1.105 \
-    nvidia-cudnn-cu12==9.1.0.70 \
-    nvidia-cufft-cu12==11.0.2.54 \
-    nvidia-curand-cu12==10.3.2.106 \
-    nvidia-cusolver-cu12==11.4.5.107 \
-    nvidia-cusparse-cu12==12.1.0.106 \
-    nvidia-cusparselt-cu12==0.6.2 \
-    nvidia-nccl-cu12==2.21.5 \
-    nvidia-nvjitlink-cu12==12.9.86 \
-    nvidia-nvtx-cu12==12.1.105 \
-    packaging==26.3 \
-    pandas==3.1.1 \
-    peft==0.21.2 \
-    pillow==13.0.0 \
-    propcache==0.5.4 \
-    protobuf==7.36.2 \
-    psutil==7.2.2 \
-    pyarrow==26.0.1 \
-    pycountry==26.2.16 \
-    pydantic==2.14.3 \
-    pydantic-core==2.50.4 \
-    pydantic-extra-types==2.11.1 \
-    pygments==2.21.0 \
-    python-dateutil==4.0.0 \
-    pyyaml==6.0.3 \
-    referencing==0.37.0 \
-    regex==2026.11.7 \
-    requests==2.34.2 \
-    rich==15.0.0 \
-    rpds-py==2026.9.1 \
-    safetensors==0.8.0 \
-    sentence-transformers==6.2.0 \
-    sentencepiece==0.2.3 \
-    setuptools==78.1.0 \
-    shellingham==1.5.4 \
-    structlog==26.1.0 \
-    sympy==1.13.1 \
-    threadpoolctl==3.8.0 \
-    tiktoken==0.14.0 \
-    tokenizers==0.23.3 \
-    torch==2.5.1+cu121 \
-    torchaudio==2.5.1+cu121 \
-    torchvision==0.20.1+cu121 \
-    tqdm==4.70.1 \
-    transformers==5.17.0 \
-    triton==3.1.0 \
-    trl==1.15.0 \
-    typer==0.28.0 \
-    typing-extensions==4.16.0 \
-    typing-inspection==0.4.5 \
-    tzdata==2026.6 \
-    unsloth==2026.11.3 \
-    unsloth-zoo==2026.11.3 \
-    urllib3==2.8.0 \
-    wheel==0.48.0 \
-    xxhash==4.0.2 \
-    yarl==1.25.1 \
-    zipp==4.1.2
-
-# 7. Pre-download matching Unsloth pre-quantized base model weights
-echo "[+] Pre-caching default unsloth/Qwen2.5-3B-Instruct-bnb-4bit base model..."
-hf download unsloth/Qwen2.5-3B-Instruct-bnb-4bit --include "*.safetensors" "config.json" "tokenizer*" "generation_config.json"
-
-# 8. Copy build.sh into workspace & create a reference sample dataset
-if [ -f "$SCRIPT_DIR/build.sh" ]; then
-    cp "$SCRIPT_DIR/build.sh" "$INSTALL_DIR/build.sh"
-    chmod +x "$INSTALL_DIR/build.sh"
+SAMPLE_DATASET="${INSTALL_DIR}/sample_dataset.jsonl"
+if [[ ! -e "$SAMPLE_DATASET" ]]; then
+    cat > "$SAMPLE_DATASET" <<'JSONL'
+{"messages": [{"role": "system", "content": "You are an AI assistant trained with AarForge."}, {"role": "user", "content": "What dataset format does AarForge use?"}, {"role": "assistant", "content": "AarForge uses one JSON object per line. Each object has a messages array containing ordered system, user, and assistant messages."}]}
+JSONL
 else
-    echo "[-] Warning: build.sh not found in $SCRIPT_DIR. Remember to copy it into $INSTALL_DIR."
+    info "Preserving existing sample_dataset.jsonl; it was not overwritten."
 fi
 
-cat << 'SAMPLE_EOF' > "$INSTALL_DIR/sample_dataset.jsonl"
-{"messages": [{"role": "system", "content": "You are an AI assistant trained with AarForge."}, {"role": "user", "content": "What dataset format does AarForge use?"}, {"role": "assistant", "content": "AarForge uses the OpenAI-style gold standard conversational JSONL format with a messages array."}]}
-SAMPLE_EOF
+# Run a stdlib-only sanity check on the sample JSONL before declaring installation complete.
+"$VENV_PY" - "$SAMPLE_DATASET" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as stream:
+    lines = [line for line in stream if line.strip()]
+if not lines:
+    raise SystemExit("Sample JSONL file is empty.")
+for number, line in enumerate(lines, 1):
+    obj = json.loads(line)
+    if set(obj) != {"messages"} or not isinstance(obj["messages"], list):
+        raise SystemExit(f"Invalid sample JSONL schema on line {number}.")
+    for message in obj["messages"]:
+        if set(message) != {"role", "content"} or message["role"] not in {"system", "user", "assistant"} or not isinstance(message["content"], str):
+            raise SystemExit(f"Invalid sample message on line {number}.")
+print(f"[+] Sample dataset validated: {path}")
+PY
 
-echo "=================================================="
-echo "          INSTALLATION COMPLETE                   "
-echo " Workspace located at: $INSTALL_DIR               "
-echo " Reference dataset saved: sample_dataset.jsonl    "
-echo " Run './build.sh' inside your workspace to forge! "
-echo "=================================================="
+printf '\n'
+read -r -p "Download/cache the default model now? This can require several GB. [Y/n]: " cache_model || true
+if [[ -z "${cache_model:-}" || "${cache_model,,}" == "y" || "${cache_model,,}" == "yes" ]]; then
+    HF_BIN="${INSTALL_DIR}/.venv/bin/hf"
+    if [[ -x "$HF_BIN" ]]; then
+        log "Downloading model files for $DEFAULT_MODEL into the Hugging Face cache..."
+        if "$HF_BIN" download "$DEFAULT_MODEL" --include '*.safetensors' 'config.json' 'generation_config.json' 'tokenizer*' 'special_tokens_map.json' 'model.safetensors.index.json'; then
+            log "Default model cache completed."
+        else
+            printf '[!] Model pre-download failed. Installation is complete; the build step can retry the download. Check network access and Hugging Face permissions.\n' >&2
+        fi
+    else
+        printf '[!] Hugging Face CLI was not found in the virtual environment. The model will download when training starts.\n' >&2
+    fi
+else
+    info "Skipping model pre-download. The model will be downloaded when you build."
+fi
+
+printf '\n==================================================\n'
+printf '%s\n' '             INSTALLATION COMPLETE                '
+printf 'Workspace:       %s\n' "$INSTALL_DIR"
+printf 'Virtual env:     %s\n' "${INSTALL_DIR}/.venv"
+printf 'Sample dataset:  %s\n' "$SAMPLE_DATASET"
+printf '%s\n' 'Next: cd into the workspace and run ./build.sh'
+printf '%s\n' 'If Ollama is not running, start it with: ollama serve'
+printf '%s\n' '=================================================='
