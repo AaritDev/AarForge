@@ -78,15 +78,8 @@ printf '%s\n' '=================================================='
 
 [[ "$(uname -s)" == Linux ]] || die 'This installer currently supports Linux only.'
 for tool in curl realpath; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required."; done
-command -v python3 >/dev/null 2>&1 || die 'Python 3 is required.'
-PYTHON_BIN="$(command -v python3)"
-"$PYTHON_BIN" - <<'PY'
-import sys
-if sys.version_info < (3, 10) or sys.version_info >= (3, 14):
-    raise SystemExit(f"AarForge currently supports Python 3.10–3.13; found {sys.version.split()[0]}.")
-print(f"[+] Using Python {sys.version.split()[0]}")
-PY
-
+# The host may have Python 3.14 or no suitable Python at all. Use UV to
+# provision a supported interpreter instead of rejecting the system Python.
 [[ -f "$SCRIPT_DIR/build.sh" ]] || die "build.sh must be present beside install.sh ($SCRIPT_DIR)."
 printf '\nSelect where AarForge should create/use its workspace.\n'
 select_workspace_directory
@@ -106,6 +99,16 @@ else
     die 'UV installation completed but its executable could not be located.'
 fi
 
+log 'Ensuring a supported Python 3.13 interpreter is available through UV...'
+"$UV_BIN" python install 3.13
+PYTHON_BIN="$("$UV_BIN" python find 3.13)" || die 'UV could not locate its Python 3.13 interpreter.'
+"$PYTHON_BIN" - <<'PY'
+import sys
+if sys.version_info < (3, 10) or sys.version_info >= (3, 14):
+    raise SystemExit(f"AarForge requires Python 3.10–3.13; UV selected {sys.version.split()[0]}.")
+print(f"[+] Using Python {sys.version.split()[0]} ({sys.executable})")
+PY
+
 if ! command -v ollama >/dev/null 2>&1; then
     log 'Installing Ollama...'
     curl -fsSL https://ollama.com/install.sh | sh
@@ -114,11 +117,27 @@ command -v ollama >/dev/null 2>&1 || die "Ollama installation did not provide an
 ollama --version
 
 cd -- "$INSTALL_DIR"
+if [[ -d .venv ]]; then
+    EXISTING_VENV_PY="$INSTALL_DIR/.venv/bin/python"
+    if [[ ! -x "$EXISTING_VENV_PY" ]]; then
+        die "Existing .venv is incomplete (missing .venv/bin/python). Rename or remove it, then rerun the installer."
+    fi
+    EXISTING_VERSION="$("$EXISTING_VENV_PY" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+    if ! "$EXISTING_VENV_PY" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 14) else 1)'; then
+        printf '[!] Existing .venv uses unsupported Python %s. AarForge will use Python 3.13.\n' "$EXISTING_VERSION" >&2
+        answer=''
+        read -r -p 'Move the old .venv to a timestamped backup and create a new one? [y/N]: ' answer || true
+        [[ "${answer,,}" == y || "${answer,,}" == yes ]] || die 'Cannot continue with an unsupported existing virtual environment.'
+        BACKUP_VENV="$INSTALL_DIR/.venv.backup-$(date +%Y%m%dT%H%M%S)"
+        mv -- .venv "$BACKUP_VENV"
+        info "Preserved previous environment at $BACKUP_VENV"
+    else
+        info "Reusing existing $INSTALL_DIR/.venv (Python $EXISTING_VERSION)."
+    fi
+fi
 if [[ ! -d .venv ]]; then
-    log 'Creating workspace-local Python virtual environment...'
+    log 'Creating workspace-local Python 3.13 virtual environment...'
     "$UV_BIN" venv --python "$PYTHON_BIN" .venv
-else
-    info "Reusing existing $INSTALL_DIR/.venv. It will not be deleted."
 fi
 VENV_PY="$INSTALL_DIR/.venv/bin/python"
 [[ -x "$VENV_PY" ]] || die 'Invalid .venv: .venv/bin/python is missing.'
