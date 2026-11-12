@@ -157,6 +157,8 @@ Depending on your hardware, model size, and training configuration, this process
 
 Go grab a drink. Your GPU has work to do.
 
+![Image of model training](./assets/documentation/example-training.png "Image of model training")
+
 **5. Run your model**
 
 After successful completion:
