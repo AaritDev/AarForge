@@ -1,27 +1,33 @@
 # AarForge
 
-AarForge is an opinionated local LLM fine-tuning and deployment pipeline that converts conversational JSONL datasets into fine-tuned GGUF models ready to run with Ollama.
+**Your conversational JSONL goes in. Your fine-tuned GGUF model comes out.**
 
-It uses Unsloth, LoRA, 4-bit quantization, and Hugging Face tools to make fine-tuning more accessible on NVIDIA consumer GPUs.
+AarForge is an opinionated local LLM fine-tuning and deployment pipeline that transforms conversational JSONL datasets into fine-tuned GGUF models, ready to run locally with Ollama.
+
+Built around Unsloth, LoRA, 4-bit quantization, and Hugging Face tools, AarForge makes local LLM fine-tuning more accessible on NVIDIA consumer GPUs.
+
+No massive infrastructure. No complicated cloud setup. Just your GPU, your dataset, and a questionable amount of patience.
 
 ## Features
 
-- **Automated Setup:** Creates a Python virtual environment and installs dependencies.
+- **Automated Setup:** Creates a Python virtual environment and installs the required dependencies.
 - **4-bit Fine-tuning:** Uses Unsloth and BitsAndBytes to reduce GPU memory requirements.
-- **Conversational JSONL:** Supports OpenAI-style datasets with `system`, `user`, and `assistant` messages.
+- **Conversational JSONL:** Supports OpenAI-style datasets containing `system`, `user`, and `assistant` messages.
 - **LoRA Fine-tuning:** Trains lightweight adapters instead of updating the entire base model.
-- **GGUF Export:** Merges and exports the fine-tuned model to GGUF.
-- **Ollama Integration:** Automatically creates an Ollama model for local inference.
+- **GGUF Export:** Merges and exports the fine-tuned model into GGUF format.
+- **Ollama Integration:** Automatically generates an Ollama Modelfile and creates a local Ollama model.
 
 ## Requirements
 
 - NVIDIA GPU with CUDA support.
-- Recommended: 6GB or more VRAM (requirements vary by model and configuration).
+- **Recommended:** 6GB or more VRAM (requirements vary depending on the model and configuration).
 - Python 3.10 or newer.
 - Linux environment with Bash.
 - Git or curl.
 - Internet connection for downloading dependencies and model weights.
-- Atleast 45GB+ storage, this puppy EATS SSDs (in this economy!)
+- **At least 45GB of available storage.** This puppy EATS SSDs. In this economy?!
+
+*Actual resource requirements depend on the selected base model, training configuration, and export process.*
 
 ## Installation
 
@@ -60,34 +66,37 @@ It will then:
 
 Once installation finishes, navigate to your selected workspace.
 
+Congratulations! You've just signed up for a long-term relationship with your GPU.
+
 ## Dataset Format
 
 AarForge uses **OpenAI-style conversational JSONL**.
 
-Each line in the `.jsonl` file must contain one JSON object with a top-level `messages` array.
+Each line in your `.jsonl` file must contain one valid JSON object with a top-level `messages` array.
 
 Every message contains:
+
 - `role`: The message speaker (`system`, `user`, or `assistant`).
 - `content`: The message text.
 
-### Example dataset
+### Example Dataset
 
 ```json
 {"messages": [{"role": "system", "content": "You are AarBot, a rude and sarcastic AI."}, {"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Oh get lost, I don't care about your hello."}]}
 {"messages": [{"role": "system", "content": "You are AarBot, a rude and sarcastic AI."}, {"role": "user", "content": "What is 2 + 2?"}, {"role": "assistant", "content": "Seriously? It's 4. Even a calculator could answer that."}]}
 ```
 
-**Important dataset rules:**
+### Important Dataset Rules
 
 - Each line represents one independent conversation.
 - Each conversation must have its own `messages` array.
 - Each conversation can contain its own system prompt.
-- Messages should follow the order of the conversation.
+- Messages must follow the correct conversational order.
 - Message content must be a string.
-- Use valid JSON on every line.
-- Include at least one assistant response in each conversation.
+- Every line must contain valid JSON.
+- Each conversation must include at least one assistant response.
 
-The system message defines the behavior, personality, and instructions for that particular conversation. User and assistant messages provide the examples used for fine-tuning.
+The system message defines the behavior, personality, and instructions for that particular conversation. User and assistant messages provide the examples used during fine-tuning.
 
 Save your dataset with a `.jsonl` extension.
 
@@ -96,6 +105,8 @@ For example:
 ```text
 my_dataset.jsonl
 ```
+
+**A small tip:** Quality matters more than quantity. A thousand well-written examples are generally more useful than ten thousand conversations that look like they were generated during a caffeine overdose.
 
 ## Usage
 
@@ -114,20 +125,20 @@ chmod +x build.sh
 
 **3. Configure your model**
 
-The wizard will request the following information:
+The interactive wizard will request the following information:
 
 | Setting | Description |
 |---|---|
 | Custom AI Name | Name of your Ollama model |
 | Dataset Path | Path to your conversational JSONL dataset |
-| Base Model ID | Hugging Face or Unsloth base model |
+| Base Model ID | Hugging Face or Unsloth base model identifier |
 | Training Steps | Number of training steps |
 | System Prompt | System instructions for Ollama inference |
-| Temperature | Controls response randomness |
+| Temperature | Controls response randomness during inference |
 
 **4. Wait for training and export**
 
-AarForge automatically performs:
+AarForge automatically handles the following pipeline:
 
 1. Dataset loading and preprocessing.
 2. LoRA fine-tuning.
@@ -135,6 +146,10 @@ AarForge automatically performs:
 4. GGUF export.
 5. Ollama Modelfile generation.
 6. Ollama model creation.
+
+Depending on your hardware, model size, and training configuration, this process can take some time.
+
+Go grab a drink. Your GPU has work to do.
 
 **5. Run your model**
 
@@ -145,6 +160,8 @@ ollama run my_custom_bot
 ```
 
 Replace `my_custom_bot` with your chosen model name.
+
+That's it. Your fine-tuned model is now ready for local inference.
 
 ## Project Structure
 
@@ -163,21 +180,37 @@ AarForge/
 └── Modelfile
 ```
 
+*Generated model directories and filenames depend on your configuration.*
+
 ## Technology Stack
+
+AarForge builds on several excellent open-source projects:
 
 - [Unsloth](https://github.com/unslothai/unsloth) — Efficient LLM fine-tuning.
 - [Hugging Face Transformers](https://github.com/huggingface/transformers) — Model and tokenizer management.
 - [PEFT](https://github.com/huggingface/peft) — Parameter-efficient fine-tuning.
-- [BitsAndBytes](https://github.com/bitsandbytes-foundation/bitsandbytes) — 4-bit quantization.
-- [Astral UV](https://github.com/astral-sh/uv) — Python package management.
-- [Ollama](https://ollama.com) — Local model deployment.
+- [BitsAndBytes](https://github.com/bitsandbytes-foundation/bitsandbytes) — 4-bit quantization and quantized model loading.
+- [Astral UV](https://github.com/astral-sh/uv) — Fast Python package and environment management.
+- [Ollama](https://ollama.com) — Local model deployment and inference.
+
+## Limitations
+
+- Requires an NVIDIA GPU with compatible CUDA support.
+- Training performance depends heavily on available VRAM.
+- Not every Hugging Face model architecture is necessarily supported.
+- GGUF conversion compatibility depends on the selected base model.
+- Fine-tuning quality depends on dataset quality and training configuration.
 
 ## Acknowledgments
 
-AarForge builds on the work of the Unsloth, Hugging Face, and Ollama communities.
+AarForge wouldn't exist without the work of the Unsloth, Hugging Face, and Ollama communities.
 
-Base models retain their respective licenses and usage restrictions.
+A big thank you to everyone building and maintaining the tools that make local AI development possible.
+
+Base models retain their respective licenses and usage restrictions. Make sure to review the applicable model license before using or distributing fine-tuned models.
 
 ---
 
-If you find AarForge useful, consider giving the repository a star!
+**If you find AarForge useful, consider giving the repository a star!**
+
+It costs you nothing, but it makes the little developer dopamine receptors go brrrr.
