@@ -27,6 +27,47 @@ expand_home() {
     esac
 }
 
+# Interactive directory browser. Select the current directory with option 0;
+# navigate into a folder by choosing its number; choose .. to go up.
+select_workspace_directory() {
+    local current="$PWD" entry choice i
+    local -a dirs
+    while :; do
+        current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
+        printf '\nWorkspace location: %s\n' "$current"
+        printf '  0) Use this directory\n'
+        printf '  u) Go to parent directory\n'
+        printf '  n) Create a new folder here\n'
+        printf '  m) Enter a path manually\n'
+        mapfile -d '' -t dirs < <(find "$current" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
+        for i in "${!dirs[@]}"; do printf '  %d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; done
+        read -r -p 'Choose an option: ' choice || die 'No workspace directory selected.'
+        case "$choice" in
+            0) SELECTED_PATH="$current"; return 0 ;;
+            u|U) current="$(dirname -- "$current")" ;;
+            n|N)
+                read -r -p 'New workspace folder name: ' entry || true
+                [[ -n "$entry" ]] || { info 'Folder name cannot be empty.'; continue; }
+                mkdir -p -- "$current/$entry" || die "Cannot create workspace directory: $current/$entry"
+                SELECTED_PATH="$(cd -- "$current/$entry" && pwd -P)"
+                return 0
+                ;;
+            m|M)
+                read -r -p 'Enter workspace path: ' entry || true
+                [[ -n "$entry" ]] || { info 'No path entered.'; continue; }
+                entry="$(expand_home "$entry")"
+                mkdir -p -- "$entry" || die "Cannot create workspace directory: $entry"
+                SELECTED_PATH="$(cd -- "$entry" && pwd -P)"
+                return 0
+                ;;
+            ''|*[!0-9]*) info 'Invalid selection.' ;;
+            *)
+                if (( choice >= 1 && choice <= ${#dirs[@]} )); then current="${dirs[$((choice-1))]}"; else info 'Invalid selection.'; fi
+                ;;
+        esac
+    done
+}
+
 printf '%s\n' '=================================================='
 printf '%s\n' '               AARFORGE INSTALLER                 '
 printf '%s\n' '=================================================='
@@ -47,12 +88,9 @@ print(f"[+] Using Python {sys.version.split()[0]}")
 PY
 
 [[ -f "$SCRIPT_DIR/build.sh" ]] || die "build.sh must be present beside install.sh ($SCRIPT_DIR)."
-INSTALL_DIR=""
-read -r -p 'Enter the directory for the AarForge workspace: ' INSTALL_DIR || true
-[[ -n "$INSTALL_DIR" ]] || die 'Workspace path cannot be empty.'
-INSTALL_DIR="$(expand_home "$INSTALL_DIR")"
-mkdir -p -- "$INSTALL_DIR"
-INSTALL_DIR="$(cd -- "$INSTALL_DIR" && pwd -P)"
+printf '\nSelect where AarForge should create/use its workspace.\n'
+select_workspace_directory
+INSTALL_DIR="$SELECTED_PATH"
 
 if ! command -v uv >/dev/null 2>&1; then
     log 'Installing Astral UV...'
