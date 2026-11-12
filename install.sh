@@ -175,6 +175,8 @@ uv pip install \
 echo "[+] Pre-caching default unsloth/Qwen2.5-3B-Instruct-bnb-4bit base model..."
 huggingface-cli download unsloth/Qwen2.5-3B-Instruct-bnb-4bit --include "*.safetensors" "config.json" "tokenizer*" "generation_config.json"
 
+cp build.sh "$INSTALL_DIR"
+
 echo "=================================================="
 echo "          INSTALLATION COMPLETE                   "
 echo " Workspace located at: $INSTALL_DIR               "
