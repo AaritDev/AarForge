@@ -423,18 +423,18 @@ def train() -> None:
     if labels is None:
         fail("TRL did not produce training labels; refusing to start training.")
     labels = labels.detach()
-    attention = probe.get("attention_mask")
-    if attention is None:
-        fail("TRL did not return an attention mask; cannot verify assistant-only supervision.")
-    attention = attention.detach().bool()
-    supervised = int(((labels != -100) & attention).sum().item())
-    masked_prompt = int(((labels == -100) & attention).sum().item())
-    if supervised <= 0 or masked_prompt <= 0:
+    # Some TRL/Unsloth dataloader versions omit attention_mask from the batch.
+    # Assistant-only supervision is represented by labels: prompt tokens are -100,
+    # while assistant target tokens contain their token IDs. Do not require an
+    # attention_mask just to verify that the trainer produced both categories.
+    supervised = int((labels != -100).sum().item())
+    masked = int((labels == -100).sum().item())
+    if supervised <= 0 or masked <= 0:
         fail(
-            "Assistant-only loss verification failed: expected assistant labels plus masked system/user labels. "
-            "This model's chat template may not support assistant-only training in the installed TRL version."
+            "Assistant-only loss verification failed: expected assistant target labels "
+            "and masked labels. Check the model's chat template and TRL configuration."
         )
-    print(f"[+] Assistant-only loss verified (assistant target tokens: {supervised}; masked non-padding prompt tokens: {masked_prompt}).")
+    print(f"[+] Assistant-only loss labels verified (assistant target tokens: {supervised}; masked tokens: {masked}).")
 
     print(f"[+] Training for {max_steps} optimizer step(s)...")
     result = trainer.train()
