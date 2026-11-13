@@ -74,9 +74,10 @@ run_streamed() {
 # Interactive JSONL selector. Folders can be browsed recursively; paths outside
 # the current tree can be entered manually.
 select_jsonl_dataset() {
-    local current="$PWD" choice entry i
+    local current="$PWD" choice entry i redraw=0
     local -a dirs files
     while :; do
+        if (( redraw )) && [[ -t 1 ]]; then printf '\033[2J\033[H'; fi
         current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
         printf '\nDataset location: %s\n' "$current"
         printf '  0) Enter a dataset path manually\n'
@@ -86,6 +87,7 @@ select_jsonl_dataset() {
         for i in "${!dirs[@]}"; do printf '  d%d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; done
         for i in "${!files[@]}"; do printf '  f%d) %s\n' "$((i+1))" "$(basename -- "${files[$i]}")"; done
         read -r -p 'Choose a folder/file (e.g. d1, f1, u, 0): ' choice || die 'No dataset selected.'
+        redraw=1
         case "$choice" in
             u|U) current="$(dirname -- "$current")" ;;
             0)

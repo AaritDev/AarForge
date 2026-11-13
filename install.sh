@@ -30,9 +30,10 @@ expand_home() {
 # Interactive directory browser. Select the current directory with option 0;
 # navigate into a folder by choosing its number; choose .. to go up.
 select_workspace_directory() {
-    local current="$PWD" entry choice i
+    local current="$PWD" entry choice i redraw=0
     local -a dirs
     while :; do
+        if (( redraw )) && [[ -t 1 ]]; then printf '\033[2J\033[H'; fi
         current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
         printf '\nWorkspace location: %s\n' "$current"
         printf '  0) Use this directory\n'
@@ -42,6 +43,7 @@ select_workspace_directory() {
         mapfile -d '' -t dirs < <(find "$current" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
         for i in "${!dirs[@]}"; do printf '  %d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; done
         read -r -p 'Choose an option: ' choice || die 'No workspace directory selected.'
+        redraw=1
         case "$choice" in
             0) SELECTED_PATH="$current"; return 0 ;;
             u|U) current="$(dirname -- "$current")" ;;
