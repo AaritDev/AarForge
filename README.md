@@ -139,10 +139,13 @@ The interactive wizard will request the following information:
 | Dataset Path | Path to your conversational JSONL dataset |
 | Base Model ID | Hugging Face or Unsloth base model identifier |
 | Training Epochs | Number of passes through the training dataset |
+| Training Steps | Maximum optimizer steps; 0 uses the epoch limit instead |
 | System Prompt | System instructions for Ollama inference |
 | Temperature | Controls response randomness during inference |
 
 Build settings are saved in `.aarforge-settings.json` in the workspace and reused as the next run's prompt defaults. `install.sh` creates this file with defaults for a new workspace and preserves existing settings.
+
+When both training limits are configured, a positive step count takes precedence over epochs. Enter `0` steps to train for the configured number of epochs.
 
 **4. Wait for training and export**
 

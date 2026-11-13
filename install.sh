@@ -246,6 +246,7 @@ if [[ ! -s "$SETTINGS_FILE" ]]; then
   "dataset_path": "",
   "base_model": "unsloth/Qwen2.5-3B-Instruct-bnb-4bit",
   "training_epochs": "3",
+  "training_steps": "60",
   "max_seq_length": "2048",
   "model_temperature": "0.7",
   "system_prompt": "You are a helpful assistant trained with AarForge."
