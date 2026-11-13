@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./assets/logo.png" alt="AarForge Logo">
+  <img src="./assets/logo.png" alt="AarForge Logo" height=250 width=250>
 </div>
 
 <h1 align="center">AarForge</h1>
