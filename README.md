@@ -142,6 +142,8 @@ The interactive wizard will request the following information:
 | System Prompt | System instructions for Ollama inference |
 | Temperature | Controls response randomness during inference |
 
+Build settings are saved in `.aarforge-settings.json` in the workspace and reused as the next run's prompt defaults. `install.sh` creates this file with defaults for a new workspace and preserves existing settings.
+
 **4. Wait for training and export**
 
 AarForge automatically handles the following pipeline:

@@ -237,6 +237,26 @@ if not count:
 print(f"[+] Sample JSONL validated: {count} conversation(s).")
 PY
 
+SETTINGS_FILE="$INSTALL_DIR/.aarforge-settings.json"
+if [[ ! -s "$SETTINGS_FILE" ]]; then
+    cat > "$SETTINGS_FILE" <<'JSON'
+{
+  "schema_version": 1,
+  "bot_name": "my_custom_bot",
+  "dataset_path": "",
+  "base_model": "unsloth/Qwen2.5-3B-Instruct-bnb-4bit",
+  "training_epochs": "3",
+  "max_seq_length": "2048",
+  "model_temperature": "0.7",
+  "system_prompt": "You are a helpful assistant trained with AarForge."
+}
+JSON
+    chmod 600 "$SETTINGS_FILE"
+    info "Initialized workspace settings at $SETTINGS_FILE."
+else
+    info 'Preserving existing .aarforge-settings.json.'
+fi
+
 read -r -p 'Download/cache the default model now? This may require several GB. [Y/n]: ' cache_model || true
 if [[ -z "${cache_model:-}" || "${cache_model,,}" == y || "${cache_model,,}" == yes ]]; then
     HF_BIN="$INSTALL_DIR/.venv/bin/hf"

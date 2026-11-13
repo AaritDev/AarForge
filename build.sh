@@ -7,6 +7,8 @@ IFS=$'\n\t'
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 VENV_PY="${SCRIPT_DIR}/.venv/bin/python"
 DEFAULT_MODEL="unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
+DEFAULT_SYSTEM_PROMPT="You are a helpful assistant trained with AarForge."
+SETTINGS_FILE="${SCRIPT_DIR}/.aarforge-settings.json"
 
 RUN_DIR=""
 BOT_NAME=""
@@ -126,6 +128,35 @@ prompt_value() {
     printf -v "$var_name" '%s' "${value:-$default}"
 }
 
+load_setting() {
+    local key="$1" fallback="$2" variable="$3" value
+    if [[ -s "$SETTINGS_FILE" ]]; then
+        value="$("$VENV_PY" - "$SETTINGS_FILE" "$key" "$fallback" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+try:
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"Cannot read AarForge settings at {settings_path}: {exc}")
+if not isinstance(settings, dict):
+    raise SystemExit(f"AarForge settings at {settings_path} must contain a JSON object.")
+
+key, fallback = sys.argv[2:]
+value = settings.get(key, fallback)
+if not isinstance(value, str):
+    raise SystemExit(f"AarForge setting '{key}' in {settings_path} must be a string.")
+print(value or fallback, end="")
+PY
+        )" || die "Could not load workspace settings from $SETTINGS_FILE."
+    else
+        value="$fallback"
+    fi
+    printf -v "$variable" '%s' "$value"
+}
+
 write_report() {
     [[ -n "$RUN_DIR" && -d "$RUN_DIR" ]] || return 0
     local report_status="$1" note="$2"
@@ -234,7 +265,8 @@ else
 fi
 
 BOT_NAME=""
-prompt_value BOT_NAME 'Enter your model name (lowercase letters, digits, . _ -)' 'my_custom_bot'
+load_setting bot_name 'my_custom_bot' SETTINGS_BOT_NAME
+prompt_value BOT_NAME 'Enter your model name (lowercase letters, digits, . _ -)' "$SETTINGS_BOT_NAME"
 [[ "$BOT_NAME" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die 'Invalid model name. Use 1-64 lowercase letters/digits and . _ -; the first character must be alphanumeric.'
 REPLACE_MODEL=0
 if (( OLLAMA_READY )); then
@@ -252,15 +284,29 @@ fi
 printf '\nExpected dataset format (one JSON object per line):\n'
 printf '%s\n' '  {"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}'
 printf '%s\n' 'Allowed roles: system, user, assistant. Each conversation must start with exactly one system message, alternate user/assistant turns, and end with assistant.'
-printf '\nBrowse to the JSONL training dataset.\n'
-select_jsonl_dataset
-DATASET_INPUT="$SELECTED_PATH"
+load_setting dataset_path '' SETTINGS_DATASET_PATH
+DATASET_INPUT=""
+if [[ -n "$SETTINGS_DATASET_PATH" && -f "$SETTINGS_DATASET_PATH" && -r "$SETTINGS_DATASET_PATH" && "${SETTINGS_DATASET_PATH,,}" == *.jsonl ]]; then
+    saved_dataset_choice=''
+    read -r -p "Use the previous dataset [$SETTINGS_DATASET_PATH]? [Y/n]: " saved_dataset_choice || true
+    if [[ "${saved_dataset_choice,,}" != n && "${saved_dataset_choice,,}" != no ]]; then
+        DATASET_INPUT="$SETTINGS_DATASET_PATH"
+    fi
+elif [[ -n "$SETTINGS_DATASET_PATH" ]]; then
+    info 'The previously selected dataset is unavailable; choose a dataset again.'
+fi
+if [[ -z "$DATASET_INPUT" ]]; then
+    printf '\nBrowse to the JSONL training dataset.\n'
+    select_jsonl_dataset
+    DATASET_INPUT="$SELECTED_PATH"
+fi
 [[ -f "$DATASET_INPUT" && -r "$DATASET_INPUT" ]] || die "Dataset file does not exist or is not readable: $DATASET_INPUT"
 [[ "${DATASET_INPUT,,}" == *.jsonl ]] || die 'Dataset filename must end in .jsonl.'
 DATASET_SOURCE="$(realpath -e -- "$DATASET_INPUT")"
 
 BASE_MODEL=""
-prompt_value BASE_MODEL 'Enter Hugging Face model ID or local model directory' "$DEFAULT_MODEL"
+load_setting base_model "$DEFAULT_MODEL" SETTINGS_BASE_MODEL
+prompt_value BASE_MODEL 'Enter Hugging Face model ID or local model directory' "$SETTINGS_BASE_MODEL"
 [[ -n "$BASE_MODEL" ]] || die 'Base model cannot be empty.'
 BASE_MODEL="$(expand_home "$BASE_MODEL")"
 if [[ -d "$BASE_MODEL" ]]; then
@@ -272,17 +318,20 @@ else
 fi
 
 TRAIN_EPOCHS=""
-prompt_value TRAIN_EPOCHS 'Enter training epochs (positive integer)' '3'
+load_setting training_epochs '3' SETTINGS_TRAIN_EPOCHS
+prompt_value TRAIN_EPOCHS 'Enter training epochs (positive integer)' "$SETTINGS_TRAIN_EPOCHS"
 [[ "$TRAIN_EPOCHS" =~ ^[1-9][0-9]{0,5}$ ]] || die 'Training epochs must be an integer from 1 to 999999.'
 
 MAX_SEQ_LENGTH=""
-prompt_value MAX_SEQ_LENGTH 'Enter maximum sequence length (128-131072)' '2048'
+load_setting max_seq_length '2048' SETTINGS_MAX_SEQ_LENGTH
+prompt_value MAX_SEQ_LENGTH 'Enter maximum sequence length (128-131072)' "$SETTINGS_MAX_SEQ_LENGTH"
 [[ "$MAX_SEQ_LENGTH" =~ ^[0-9]{1,6}$ ]] || die 'Maximum sequence length must be an integer with at most six digits.'
 MAX_SEQ_LENGTH=$((10#$MAX_SEQ_LENGTH))
 (( MAX_SEQ_LENGTH >= 128 && MAX_SEQ_LENGTH <= 131072 )) || die 'Maximum sequence length must be between 128 and 131072.'
 
 MODEL_TEMP=""
-prompt_value MODEL_TEMP 'Enter Ollama temperature (0.0-2.0)' '0.7'
+load_setting model_temperature '0.7' SETTINGS_MODEL_TEMPERATURE
+prompt_value MODEL_TEMP 'Enter Ollama temperature (0.0-2.0)' "$SETTINGS_MODEL_TEMPERATURE"
 if ! "$VENV_PY" - "$MODEL_TEMP" <<'PY'
 import math, sys
 try:
@@ -297,8 +346,9 @@ then
 fi
 
 MODEL_SYSTEM_PROMPT=""
-read -r -p 'Enter the Ollama system prompt [You are a helpful assistant trained with AarForge.]: ' MODEL_SYSTEM_PROMPT || true
-MODEL_SYSTEM_PROMPT="${MODEL_SYSTEM_PROMPT:-You are a helpful assistant trained with AarForge.}"
+load_setting system_prompt "$DEFAULT_SYSTEM_PROMPT" SETTINGS_SYSTEM_PROMPT
+read -r -p "Enter the Ollama system prompt [$SETTINGS_SYSTEM_PROMPT]: " MODEL_SYSTEM_PROMPT || true
+MODEL_SYSTEM_PROMPT="${MODEL_SYSTEM_PROMPT:-$SETTINGS_SYSTEM_PROMPT}"
 [[ "$MODEL_SYSTEM_PROMPT" != *'"""'* ]] || die 'System prompt cannot contain the triple-quote delimiter (""") used by Ollama Modelfile syntax.'
 
 DATASET_COPY="${SCRIPT_DIR}/${BOT_NAME}_dataset.jsonl"
@@ -332,6 +382,51 @@ export AARFORGE_NUM_EPOCHS="$TRAIN_EPOCHS"
 export AARFORGE_MAX_SEQ_LENGTH="$MAX_SEQ_LENGTH"
 export AARFORGE_MODEL_TEMP="$MODEL_TEMP"
 export AARFORGE_SYSTEM_PROMPT="$MODEL_SYSTEM_PROMPT"
+
+if ! AARFORGE_SETTINGS_BOT_NAME="$BOT_NAME" \
+    AARFORGE_SETTINGS_DATASET_PATH="$DATASET_SOURCE" \
+    AARFORGE_SETTINGS_BASE_MODEL="$BASE_MODEL" \
+    AARFORGE_SETTINGS_TRAINING_EPOCHS="$TRAIN_EPOCHS" \
+    AARFORGE_SETTINGS_MAX_SEQ_LENGTH="$MAX_SEQ_LENGTH" \
+    AARFORGE_SETTINGS_MODEL_TEMPERATURE="$MODEL_TEMP" \
+    AARFORGE_SETTINGS_SYSTEM_PROMPT="$MODEL_SYSTEM_PROMPT" \
+    "$VENV_PY" - "$SETTINGS_FILE" <<'PY'
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+settings = {
+    "schema_version": 1,
+    "bot_name": os.environ["AARFORGE_SETTINGS_BOT_NAME"],
+    "dataset_path": os.environ["AARFORGE_SETTINGS_DATASET_PATH"],
+    "base_model": os.environ["AARFORGE_SETTINGS_BASE_MODEL"],
+    "training_epochs": os.environ["AARFORGE_SETTINGS_TRAINING_EPOCHS"],
+    "max_seq_length": os.environ["AARFORGE_SETTINGS_MAX_SEQ_LENGTH"],
+    "model_temperature": os.environ["AARFORGE_SETTINGS_MODEL_TEMPERATURE"],
+    "system_prompt": os.environ["AARFORGE_SETTINGS_SYSTEM_PROMPT"],
+}
+temporary_path = None
+try:
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=settings_path.parent,
+        prefix=f"{settings_path.name}.", delete=False,
+    ) as stream:
+        temporary_path = Path(stream.name)
+        json.dump(settings, stream, indent=2, ensure_ascii=False)
+        stream.write("\n")
+    os.replace(temporary_path, settings_path)
+except OSError as exc:
+    raise SystemExit(f"Could not save AarForge settings to {settings_path}: {exc}")
+finally:
+    if temporary_path is not None:
+        temporary_path.unlink(missing_ok=True)
+PY
+then
+    die "Could not save workspace settings to $SETTINGS_FILE."
+fi
 
 log "Run directory: $RUN_DIR"
 log 'Generating training and export programs...'
