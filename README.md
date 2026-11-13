@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="./assets/logo.png" alt="AarForge Logo">
+</div>
+
 <h1 align="center">AarForge</h1>
 
 <p align="center">
