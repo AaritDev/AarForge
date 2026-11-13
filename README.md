@@ -138,7 +138,7 @@ The interactive wizard will request the following information:
 | Custom AI Name | Name of your Ollama model |
 | Dataset Path | Path to your conversational JSONL dataset |
 | Base Model ID | Hugging Face or Unsloth base model identifier |
-| Training Steps | Number of training steps |
+| Training Epochs | Number of passes through the training dataset |
 | System Prompt | System instructions for Ollama inference |
 | Temperature | Controls response randomness during inference |
 

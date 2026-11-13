@@ -271,9 +271,9 @@ else
     die 'Base model must be a Hugging Face repo ID (org/model) or an existing local directory.'
 fi
 
-TRAIN_STEPS=""
-prompt_value TRAIN_STEPS 'Enter training steps (positive integer)' '60'
-[[ "$TRAIN_STEPS" =~ ^[1-9][0-9]{0,5}$ ]] || die 'Training steps must be an integer from 1 to 999999.'
+TRAIN_EPOCHS=""
+prompt_value TRAIN_EPOCHS 'Enter training epochs (positive integer)' '3'
+[[ "$TRAIN_EPOCHS" =~ ^[1-9][0-9]{0,5}$ ]] || die 'Training epochs must be an integer from 1 to 999999.'
 
 MAX_SEQ_LENGTH=""
 prompt_value MAX_SEQ_LENGTH 'Enter maximum sequence length (128-131072)' '2048'
@@ -328,7 +328,7 @@ export AARFORGE_DATASET="$DATASET_COPY"
 export AARFORGE_RUN_DIR="$RUN_DIR"
 export AARFORGE_ADAPTER_DIR="$ADAPTER_DIR"
 export AARFORGE_GGUF_DIR="$GGUF_DIR"
-export AARFORGE_MAX_STEPS="$TRAIN_STEPS"
+export AARFORGE_NUM_EPOCHS="$TRAIN_EPOCHS"
 export AARFORGE_MAX_SEQ_LENGTH="$MAX_SEQ_LENGTH"
 export AARFORGE_MODEL_TEMP="$MODEL_TEMP"
 export AARFORGE_SYSTEM_PROMPT="$MODEL_SYSTEM_PROMPT"
@@ -438,7 +438,7 @@ def train() -> None:
     dataset_path = Path(os.environ["AARFORGE_DATASET"]).expanduser().resolve()
     run_dir = Path(os.environ["AARFORGE_RUN_DIR"]).resolve()
     adapter_dir = Path(os.environ["AARFORGE_ADAPTER_DIR"]).resolve()
-    max_steps = int(os.environ["AARFORGE_MAX_STEPS"])
+    num_epochs = int(os.environ["AARFORGE_NUM_EPOCHS"])
     max_seq_length = int(os.environ["AARFORGE_MAX_SEQ_LENGTH"])
     records = load_and_validate_dataset(dataset_path)
 
@@ -539,18 +539,17 @@ def train() -> None:
         model.config.use_cache = False
 
     train_dataset = Dataset.from_list(records)
-    save_steps = max(1, min(25, max_steps))
     use_bf16 = bool(torch.cuda.is_bf16_supported())
     training_args = SFTConfig(
         output_dir=str(run_dir / "trainer_output"),
         max_length=max_seq_length,
-        max_steps=max_steps,
+        num_train_epochs=num_epochs,
+        max_steps=-1,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         learning_rate=2e-4,
         logging_steps=1,
-        save_strategy="steps",
-        save_steps=save_steps,
+        save_strategy="epoch",
         save_total_limit=2,
         optim="adamw_8bit",
         weight_decay=0.01,
@@ -580,7 +579,7 @@ def train() -> None:
         fail("Assistant-only loss verification failed: expected assistant target labels and masked prompt labels. Check the model chat template and TRL configuration.")
     print(f"[+] Assistant-only loss labels verified (assistant target tokens: {supervised}; masked tokens: {masked}).")
 
-    print(f"[+] Training for {max_steps} optimizer step(s)...")
+    print(f"[+] Training for {num_epochs} epoch(s)...")
     result = trainer.train()
     if trainer.state.global_step < 1:
         fail("Trainer completed without performing an optimizer step.")
@@ -602,7 +601,7 @@ def train() -> None:
         "dataset": str(dataset_path),
         "dataset_sha256": dataset_hash.hexdigest(),
         "conversation_count": len(records),
-        "max_steps_requested": max_steps,
+        "num_epochs_requested": num_epochs,
         "global_step": int(trainer.state.global_step),
         "max_seq_length": max_seq_length,
         "assistant_only_loss": True,
