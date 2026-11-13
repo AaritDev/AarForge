@@ -1,12 +1,26 @@
-![Github Repo](https://img.shields.io/badge/github-repo-blue?logo=github)
-![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
-![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
-![Ollama](https://img.shields.io/badge/Ollama-Integration-orange.svg)
-![Unsloth](https://img.shields.io/badge/Powered%20by-Unsloth-red.svg)
+<h1 align="center">AarForge</h1>
 
-# AarForge
+<p align="center">
+  <b> Your conversational JSONL goes in. Your fine-tuned GGUF model comes out. </b>
+</p>
 
-**Your conversational JSONL goes in. Your fine-tuned GGUF model comes out.**
+<p align="center">
+  <a href="https://github.com/AaritDev/AarForge/">
+    <img src="https://img.shields.io/badge/github-repo-blue?logo=github" alt="Github Repo">
+  </a>
+  <a href="https://www.python.org/">
+    <img src="https://img.shields.io/badge/python-3.11-blue.svg" alt="Python 3.11">
+  </a>
+  <a href="https://www.gnu.org/licenses/gpl-3.0">
+    <img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3">
+  </a>
+  <a href="https://ollama.com/">
+    <img src="https://img.shields.io/badge/Ollama-Integration-orange.svg" alt="Ollama">
+  </a>
+  <a href="https://unsloth.ai/">
+    <img src="https://img.shields.io/badge/Powered%20by-Unsloth-red.svg" alt="Powered by Unsloth">
+  </a>
+</p>
 
 AarForge is an opinionated local LLM fine-tuning and deployment pipeline that transforms conversational JSONL datasets into fine-tuned GGUF models, ready to run locally with Ollama.
 
@@ -162,7 +176,9 @@ Depending on your hardware, model size, and training configuration, this process
 
 Go grab a drink. Your GPU has work to do.
 
-![Image of model training](./assets/documentation/example-training.png "Image of model training")
+<p align="center">
+  <img src="./assets/documentation/example-training.png" alt="Image of Model Training">
+</p>
 
 **5. Run your model**
 
