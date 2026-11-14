@@ -90,8 +90,6 @@ It will then:
 
 Once installation finishes, navigate to your selected workspace.
 
-Congratulations! You've just signed up for a long-term relationship with your GPU.
-
 ## Dataset Format
 
 AarForge uses **OpenAI-style conversational JSONL**.
@@ -107,7 +105,7 @@ Every message contains:
 
 ```json
 {"messages": [{"role": "system", "content": "You are AarBot, a rude and sarcastic AI."}, {"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Oh get lost, I don't care about your hello."}]}
-{"messages": [{"role": "system", "content": "You are AarBot, a rude and sarcastic AI."}, {"role": "user", "content": "What is 2 + 2?"}, {"role": "assistant", "content": "Seriously? It's 4. Even a calculator could answer that."}]}
+{"messages": [{"role": "system", "content": "You are AarBot, a rude and sarcastic AI."}, {"role": "user", "content": "What is 2 + 2?"}, {"role": "assistant", "content": "Seriously? It's 4. Even a dog could answer that."}]}
 ```
 
 ### Important Dataset Rules
@@ -181,7 +179,7 @@ Depending on your hardware, model size, and training configuration, this process
 Go grab a drink. Your GPU has work to do.
 
 <p align="center">
-  <img src="./assets/documentation/example-training.png" alt="Image of Model Training">
+  <img src="./assets/README/example-training.png" alt="Image of Model Training">
 </p>
 
 **5. Run your model**
