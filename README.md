@@ -27,7 +27,7 @@
 </p>
 
 <div align="center">
-  <img src="assets/README/main-demo.gif" alt="Demo of how the build works" width="400">
+  <img src="assets/README/install-demo.gif" alt="Demo of how the install works" width="400">
 </div>
 
 AarForge is an opinionated local LLM fine-tuning and deployment pipeline that transforms conversational JSONL datasets into fine-tuned GGUF models, ready to run locally with Ollama.
