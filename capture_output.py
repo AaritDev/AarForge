@@ -33,11 +33,13 @@ def main() -> int:
         print(f"[ERROR] Could not open JSONL log {log_path}: {exc}", file=sys.stderr)
         return 2
     try:
+        # Python otherwise buffers stdout when piped, delaying training metrics.
         child_env = os.environ.copy()
         child_env["PYTHONUNBUFFERED"] = "1"
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
+            # Keep one ordered stream so log entries reflect terminal event order.
             stderr=subprocess.STDOUT,
             env=child_env,
         )
@@ -56,6 +58,7 @@ def main() -> int:
             level = "WARN"
         else:
             level = "INFO"
+        # Flush each event so an interrupted build still has a useful log.
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "run_code": run_code,
@@ -72,6 +75,7 @@ def main() -> int:
             return False
         lower = text.lower()
 
+        # Keep backend banners and preprocessing chatter in the log, not the UI.
         excluded = (
             "unsloth:",
             "unsloth zoo",
@@ -119,6 +123,7 @@ def main() -> int:
         text = message.strip()
         if not text:
             return
+        # Metrics are recorded before this filter, so hide them only from the UI.
         if (
             stage == "training"
             and text.startswith("{")
@@ -134,6 +139,7 @@ def main() -> int:
         is_progress = bool(re.search(r"\b\d+%\s*\|", text)) or "it/s" in lower or "s/it" in lower or "epoch" in lower and "%" in text
         if is_progress:
             if sys.stdout.isatty():
+                # Erase only the active row so progress does not scroll the screen.
                 sys.stdout.write(f"\033[2K\r{text}")
                 progress_line_active = True
             else:
@@ -149,12 +155,14 @@ def main() -> int:
     def emit_heartbeat() -> None:
         nonlocal last_visible_output
         finish_progress_line()
+        # Long model loads can be silent; periodically reassure the user.
         notice = f"[NOTICE] Still working on {stage.replace('-', ' ')}; detailed output is being saved to the run log."
         record(notice)
         sys.stdout.write(f"{notice}\n")
         sys.stdout.flush()
         last_visible_output = time.monotonic()
 
+    # tqdm and model loaders may use either carriage returns or newlines.
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     pending = ""
     try:
@@ -192,6 +200,7 @@ def main() -> int:
         finish_progress_line()
         return_code = process.wait()
     except KeyboardInterrupt:
+        # Forward cancellation to the child instead of leaving training orphaned.
         if process.poll() is None:
             process.send_signal(signal.SIGINT)
         process.wait()

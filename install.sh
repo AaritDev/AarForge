@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# AarForge Linux installer. Uses Unsloth's published dependency constraints.
+# Prepare a workspace-local Python environment, install training dependencies,
+# install build assets, initialize settings, and optionally cache the default model.
 set -Eeuo pipefail
 IFS=$'\n\t'
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_MODEL="unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
-# Pin the Unsloth release, not individual transitive dependencies. Its package
-# metadata constrains the compatible torch/transformers/trl version ranges.
 UNSLOTH_VERSION="2026.11.4"
 
+# Enable color only for interactive terminals and respect the standard opt-out.
 UI_RESET=""
 UI_BOLD=""
 UI_GREEN=""
@@ -24,6 +24,7 @@ if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
     UI_RED=$'\033[31m'
 fi
 
+# Keep installer prompts and status labels consistent with build.sh.
 ui_header() {
     printf '\n%bAarForge%b  %s\n' "$UI_BOLD" "$UI_RESET" "$1"
     printf '%s\n' '------------------------------------------------------------'
@@ -62,6 +63,7 @@ on_error() {
 }
 trap on_error ERR
 
+# Expand a leading tilde without running shell evaluation on the entered path.
 expand_home() {
     case "$1" in
         '~') printf '%s' "$HOME" ;;
@@ -70,6 +72,7 @@ expand_home() {
     esac
 }
 
+# Keep selector navigation in place and avoid exposing generated cache folders.
 clear_selector_lines() {
     local lines="${1:-0}"
     if (( lines > 0 )) && [[ -t 1 ]]; then
@@ -80,8 +83,7 @@ clear_selector_lines() {
     fi
 }
 
-# Interactive directory browser. Select the current directory with option 0;
-# navigate into a folder by choosing its number; choose .. to go up.
+# Select the workspace root, browse into a folder, or enter/create a path.
 select_workspace_directory() {
     local current="$PWD" entry choice i redraw=0 menu_lines=0
     local -a dirs
@@ -132,15 +134,15 @@ select_workspace_directory() {
 
 ui_header 'Install' 'Set up an AarForge workspace and its training environment.'
 
+# Fail early when the host is unsupported or required system tools are absent.
 [[ "$(uname -s)" == Linux ]] || die 'This installer currently supports Linux only.'
 for tool in curl realpath flock; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required."; done
-# The host may have Python 3.14 or no suitable Python at all. Use UV to
-# provision a supported interpreter instead of rejecting the system Python.
 [[ -f "$SCRIPT_DIR/build.sh" ]] || die "build.sh must be present beside install.sh ($SCRIPT_DIR)."
 ui_section 'Choose workspace'
 select_workspace_directory
 INSTALL_DIR="$SELECTED_PATH"
 AARFORGE_DIR="${INSTALL_DIR}/AarForge"
+# Workspace state, run logs, and build artifacts stay under the selected folder.
 mkdir -p -- "$AARFORGE_DIR/Logs" "$AARFORGE_DIR/Runs" || die "Could not create AarForge workspace directories in $AARFORGE_DIR."
 chmod 700 "$AARFORGE_DIR" "$AARFORGE_DIR/Logs" "$AARFORGE_DIR/Runs"
 exec 9>"${AARFORGE_DIR}/.build.lock"
@@ -148,6 +150,7 @@ chmod 600 "${AARFORGE_DIR}/.build.lock"
 flock -n 9 || die 'AarForge is currently building in this workspace. Wait for the build to finish before installing or updating it.'
 
 CAPTURE_HELPER="${AARFORGE_DIR}/capture_output.py"
+# Install a workspace copy so build.sh can log noisy third-party output locally.
 [[ -f "$SCRIPT_DIR/capture_output.py" ]] || die "Missing JSONL capture helper beside install.sh: $SCRIPT_DIR/capture_output.py."
 cp -- "$SCRIPT_DIR/capture_output.py" "$CAPTURE_HELPER" || die "Could not install the JSONL capture helper at $CAPTURE_HELPER."
 chmod 700 "$CAPTURE_HELPER"
@@ -171,6 +174,7 @@ else
 fi
 
 ui_section 'Python environment'
+# Use UV-managed Python 3.13 rather than depending on the host's default version.
 log 'Ensuring a supported Python 3.13 interpreter is available through UV...'
 "$UV_BIN" python install 3.13
 PYTHON_BIN="$("$UV_BIN" python find 3.13)" || die 'UV could not locate its Python 3.13 interpreter.'
@@ -189,6 +193,7 @@ command -v ollama >/dev/null 2>&1 || die "Ollama installation did not provide an
 ollama --version
 
 cd -- "$INSTALL_DIR"
+# Reuse a supported virtualenv; back up only an incompatible one before replacing it.
 if [[ -d .venv ]]; then
     EXISTING_VENV_PY="$INSTALL_DIR/.venv/bin/python"
     if [[ ! -x "$EXISTING_VENV_PY" ]]; then
@@ -214,8 +219,6 @@ VENV_PY="$INSTALL_DIR/.venv/bin/python"
 
 ui_section 'Install training dependencies'
 log "Installing Unsloth $UNSLOTH_VERSION and its declared compatible dependencies..."
-# Do not add an independent transformers>=5.18 requirement: it contradicts
-# the tested upper bounds in the selected Unsloth release metadata.
 notice "Dependency installation output will be saved to $INSTALL_LOG"
 if ! "$VENV_PY" "$CAPTURE_HELPER" "$INSTALL_LOG" install dependency-install -- \
     "$UV_BIN" pip install --python "$VENV_PY" --upgrade --reinstall \
@@ -231,7 +234,7 @@ if ! "$VENV_PY" "$CAPTURE_HELPER" "$INSTALL_LOG" install dependency-check -- \
 fi
 if ! "$VENV_PY" "$CAPTURE_HELPER" "$INSTALL_LOG" install runtime-import-check -- "$VENV_PY" - <<'PY'
 import sys
-# Unsloth must patch/initialize before importing Transformers, TRL or Torch.
+# Unsloth must initialize before importing Torch, Transformers, or TRL.
 import unsloth
 import torch
 import transformers
@@ -309,6 +312,7 @@ fi
 
 SOURCE_BUILD="$(realpath -e -- "$SCRIPT_DIR/build.sh")"
 TARGET_BUILD="$INSTALL_DIR/build.sh"
+# Refresh the workspace entrypoint while asking before replacing user-modified files.
 ui_section 'Set up workspace files'
 if [[ "$SOURCE_BUILD" != "$TARGET_BUILD" ]]; then
     if [[ -e "$TARGET_BUILD" ]] && ! cmp -s -- "$SOURCE_BUILD" "$TARGET_BUILD"; then
@@ -348,6 +352,7 @@ PY
 
 SETTINGS_FILE="$AARFORGE_DIR/settings.json"
 LEGACY_SETTINGS_FILE="$INSTALL_DIR/.aarforge-settings.json"
+# Preserve existing preferences; migrate the legacy file or create defaults once.
 if [[ ! -s "$SETTINGS_FILE" ]]; then
     if [[ -s "$LEGACY_SETTINGS_FILE" ]]; then
         cp -- "$LEGACY_SETTINGS_FILE" "$SETTINGS_FILE" || die "Could not migrate settings from $LEGACY_SETTINGS_FILE."
@@ -376,6 +381,8 @@ fi
 
 ui_section 'Optional model cache'
 HF_BIN="$INSTALL_DIR/.venv/bin/hf"
+# Pre-caching is optional: cached models are reused, and training can fetch missing
+# files later if the user skips this potentially large download.
 if [[ -x "$HF_BIN" ]]; then
     if CACHED_MODELS="$("$HF_BIN" cache list --format quiet 2>/dev/null)"; then
         if grep -Fqx -- "$DEFAULT_MODEL" <<<"$CACHED_MODELS"; then

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# AarForge: dataset validation -> QLoRA fine-tuning -> GGUF export -> optional Ollama deployment.
-# Linux, Bash 4+, a prepared .venv, NVIDIA CUDA, and Unsloth are required for training.
+# Runs the full workspace pipeline: validate inputs, fine-tune, export GGUF,
+# and optionally replace an Ollama model only after staging and verification.
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -37,6 +37,7 @@ if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
     UI_RED=$'\033[31m'
 fi
 
+# Shared terminal formatting keeps prompts and status labels consistent.
 ui_header() {
     printf '\n%bAarForge%b  %s\n' "$UI_BOLD" "$UI_RESET" "$1"
     printf '%s\n' '------------------------------------------------------------'
@@ -73,6 +74,7 @@ print_artifact_location() {
     return 0
 }
 
+# Preserve run artifacts on failures and include their paths in the error report.
 die() {
     local message="$*"
     printf '\n' >&2
@@ -95,6 +97,7 @@ on_error() {
 }
 trap on_error ERR
 
+# Resolve shell-style home paths without evaluating user-provided text.
 expand_home() {
     case "$1" in
         '~') printf '%s' "$HOME" ;;
@@ -103,6 +106,8 @@ expand_home() {
     esac
 }
 
+# Selectors erase only their previous menu block; menu_lines includes ui_section's
+# leading blank row so every redraw starts at the same terminal position.
 clear_selector_lines() {
     local lines="${1:-0}"
     if (( lines > 0 )) && [[ -t 1 ]]; then
@@ -113,14 +118,14 @@ clear_selector_lines() {
     fi
 }
 
-# Capture all command output in the per-run JSONL log without forwarding it to
-# the terminal. The caller reports concise stage progress separately.
+# Run commands through the shared JSONL logger and filtered live-output renderer.
 run_streamed() {
     local stage="$1"
     shift
     "$VENV_PY" "$LOG_CAPTURE_SCRIPT" "$EVENT_LOG" "$RUN_CODE" "$stage" -- "$@"
 }
 
+# Read machine-readable values emitted by a stage without parsing terminal output.
 read_log_marker() {
     local marker="$1" stage="${2:-gguf-export}"
     "$VENV_PY" - "$EVENT_LOG" "$marker" "$stage" <<'PY'
@@ -141,8 +146,7 @@ print(value)
 PY
 }
 
-# Interactive JSONL selector. Folders can be browsed recursively; paths outside
-# the current tree can be entered manually.
+# Browse folders and JSONL files while keeping generated caches out of the menu.
 select_jsonl_dataset() {
     local current="$PWD" choice entry i redraw=0 menu_lines=0
     local -a dirs files
@@ -195,6 +199,7 @@ select_jsonl_dataset() {
     done
 }
 
+# Load a string setting from the workspace file, falling back when it is absent.
 prompt_value() {
     local var_name="$1" prompt="$2" default="$3" value=""
     read -r -p "? $prompt [$default]: " value || true
@@ -230,6 +235,8 @@ PY
     printf -v "$variable" '%s' "$value"
 }
 
+# Write reports through a temporary file so an interrupted write cannot leave a
+# truncated report behind.
 write_report() {
     [[ -n "$RUN_LOG_DIR" && -d "$RUN_LOG_DIR" ]] || return 0
     local report_status="$1" note="$2"
@@ -291,6 +298,7 @@ PY
     fi
 }
 
+# Stop after a partial pipeline success while retaining the artifacts for recovery.
 print_partial_success() {
     local reason="$1"
     BUILD_STATUS="PARTIAL SUCCESS"
@@ -319,6 +327,7 @@ print_partial_success() {
 
 ui_header 'Build' 'Fine-tune a model, export GGUF, and optionally deploy with Ollama.'
 
+# Check host prerequisites and acquire a workspace lock before creating run state.
 [[ "$(uname -s)" == "Linux" ]] || die 'This build script currently supports Linux only.'
 [[ -x "$VENV_PY" ]] || die "Virtual environment not found at $SCRIPT_DIR/.venv. Run ./install.sh first."
 command -v flock >/dev/null 2>&1 || die "The 'flock' command is required (usually provided by util-linux)."
@@ -328,7 +337,6 @@ command -v nvidia-smi >/dev/null 2>&1 || die "NVIDIA driver tools were not found
 mkdir -p -- "$LOGS_DIR" "$RUNS_DIR" || die "Could not create AarForge workspace directories in $AARFORGE_DIR."
 chmod 700 "$AARFORGE_DIR" "$LOGS_DIR" "$RUNS_DIR"
 
-# Prevent simultaneous builds from corrupting shared workspace state.
 exec 9>"${AARFORGE_DIR}/.build.lock"
 chmod 600 "${AARFORGE_DIR}/.build.lock"
 flock -n 9 || die 'Another AarForge build is already running in this workspace.'
@@ -341,6 +349,7 @@ fi
 
 RUN_CODE=$(( $(date +%s) % 65536 ))
 CODE_ATTEMPTS=0
+# Run IDs are compact numeric labels; advance on collision instead of overwriting.
 while [[ -e "$LOGS_DIR/$RUN_CODE" || -L "$LOGS_DIR/$RUN_CODE" || -e "$RUNS_DIR/$RUN_CODE" || -L "$RUNS_DIR/$RUN_CODE" ]]; do
     (( CODE_ATTEMPTS += 1 ))
     (( CODE_ATTEMPTS < 65536 )) || die 'All 16-bit run codes are already in use; archive older run artifacts before building again.'
@@ -353,7 +362,7 @@ EVENT_LOG="${RUN_LOG_DIR}/events.jsonl"
 : > "$EVENT_LOG"
 chmod 600 "$EVENT_LOG"
 
-# Keep only the 30 newest run-log folders. Run artifacts under Runs/ are retained.
+# Keep recent logs bounded, but never delete the run artifacts under Runs/.
 "$VENV_PY" - "$LOGS_DIR" "$RUN_LOG_DIR" <<'PY' || die 'Could not enforce the 30-run log retention limit.'
 import shutil
 import sys
@@ -379,7 +388,7 @@ elif [[ ! -s "$LOG_CAPTURE_SCRIPT" ]]; then
 fi
 chmod 700 "$LOG_CAPTURE_SCRIPT"
 
-# Confirm the virtual environment is internally consistent. Unsloth is imported first.
+# Import Unsloth first because it patches dependencies used by training.
 ui_section 'System check'
 cat > "${RUN_DIR}/preflight.py" <<'PY'
 import importlib.util
@@ -412,7 +421,7 @@ GPU_NAME="${GPU_NAME%%$'\n'*}"
 success "Preflight passed. GPU: $GPU_NAME"
 info "Run code: $RUN_CODE"
 
-# Ollama is optional until Stage 3. Training and export remain useful without it.
+# Training and export can run without Ollama; only deployment is skipped.
 OLLAMA_READY=0
 if command -v ollama >/dev/null 2>&1; then
     if ollama list >/dev/null 2>&1; then
@@ -468,7 +477,8 @@ BASE_MODEL="$(expand_home "$BASE_MODEL")"
 if [[ -d "$BASE_MODEL" ]]; then
     BASE_MODEL="$(realpath -e -- "$BASE_MODEL")"
 elif [[ "$BASE_MODEL" == */* ]]; then
-    : # Hugging Face repository ID; model loader validates access and existence.
+    # Hub repository IDs use the org/model form and are validated by the loader.
+    :
 else
     die 'Base model must be a Hugging Face repo ID (org/model) or an existing local directory.'
 fi
@@ -601,6 +611,8 @@ then
     die "Could not save workspace or run settings to $SETTINGS_FILE."
 fi
 
+# The generated runner owns dataset checks, model loading, training, and adapter
+# verification; keeping it in the run folder makes each run reproducible.
 log "Run directory: $RUN_DIR"
 log 'Preparing training and export programs...'
 
@@ -695,7 +707,7 @@ def validate_only() -> None:
 
 
 def train() -> None:
-    # Unsloth must be imported before Torch/Transformers/TRL.
+    # Import order matters: Unsloth patches model and training components.
     from unsloth import FastLanguageModel
     import torch
     from datasets import Dataset
@@ -715,8 +727,7 @@ def train() -> None:
     if not torch.cuda.is_available():
         fail("CUDA is not available to PyTorch. Check the NVIDIA driver and CUDA-enabled PyTorch installation.")
 
-    # A PEFT repository is not a plain base checkpoint. Detect local adapter repos
-    # before loading, then also inspect the loaded object for an already-attached PEFT config.
+    # Refuse adapters as base models; this run will attach a fresh LoRA adapter.
     local_candidate = Path(base_model).expanduser()
     if local_candidate.is_dir() and (local_candidate / "adapter_config.json").is_file():
         fail(
@@ -837,8 +848,7 @@ def train() -> None:
     print("[INFO] Initializing TRL SFTTrainer with assistant-only loss...")
     trainer = SFTTrainer(model=model, args=training_args, train_dataset=train_dataset, processing_class=tokenizer)
 
-    # Assistant-only loss is represented by labels: prompt tokens are -100 and
-    # assistant target tokens retain token IDs. Some TRL versions omit attention_mask.
+    # Verify TRL produced assistant-only labels before spending time training.
     probe = next(iter(trainer.get_train_dataloader()))
     labels = probe.get("labels")
     if labels is None:
@@ -921,6 +931,8 @@ def validate_gguf(path: Path) -> None:
 
 
 def group_main_files(paths: list[Path]) -> list[dict]:
+    # Group complete shard sets, then score quantization names to select one main
+    # model candidate without mistaking vision projector sidecars for model weights.
     groups: dict[tuple, list[Path]] = {}
     for path in paths:
         match = SHARD_RE.match(path.name)
@@ -986,8 +998,7 @@ def main() -> None:
     print("[INFO] Exporting merged model to GGUF (Q4_K_M)...")
     model.save_pretrained_gguf(str(merged_dir), tokenizer, quantization_method="q4_k_m")
 
-    # Unsloth commonly writes GGUF files to <save_directory>_gguf. Older builds
-    # may write directly to save_directory. Prefer the sibling export directory.
+    # Unsloth versions may write to either the requested directory or its sibling.
     chosen_dir = None
     discovered: list[Path] = []
     for candidate_dir in (sibling_export_dir, merged_dir):
@@ -1005,6 +1016,7 @@ def main() -> None:
     if not main_candidates:
         fail("Only mmproj GGUF projector files were produced; no main model GGUF was found.")
 
+    # Prefer the requested Q4_K_M quantization; reject ties rather than guessing.
     groups = group_main_files(main_candidates)
     highest_score = max(group["score"] for group in groups)
     preferred = [group for group in groups if group["score"] == highest_score]
@@ -1048,7 +1060,7 @@ def main() -> None:
         for path in other_main_files:
             print(f"    OTHER: {path}")
     print(f"[INFO] Export manifest: {chosen_dir / 'export_manifest.json'}")
-    # Machine-readable markers consumed by Bash after the log has been written.
+    # Bash reads these markers from the event log to continue deployment.
     print(f"AARFORGE_GGUF_OUTPUT_DIR={chosen_dir}")
     print(f"AARFORGE_GGUF_HAS_MMPROJ={'yes' if mmproj_files else 'no'}")
 
@@ -1068,6 +1080,7 @@ PY
 chmod 600 "${RUN_DIR}/train_bot.py" "${RUN_DIR}/export_gguf.py"
 
 log 'Validating the dataset before training...'
+# Validate data and compile generated programs before starting the expensive stages.
 if ! run_streamed dataset-validation "$VENV_PY" "${RUN_DIR}/train_bot.py" --validate-only; then
     die "Dataset validation failed. Review $EVENT_LOG."
 fi
@@ -1096,14 +1109,13 @@ if ! run_streamed gguf-export "$VENV_PY" "${RUN_DIR}/export_gguf.py"; then
     print_partial_success "Training completed and the LoRA adapter was preserved, but GGUF export failed. Review $EVENT_LOG. You can retry export without retraining by using the saved adapter at ${ADAPTER_DIR}, once the export issue is corrected."
 fi
 
-# Read the final export directory/vision marker from the JSONL event log.
+# The export manifest, not directory order, determines the main GGUF and sidecars.
 GGUF_OUTPUT_DIR="$(read_log_marker AARFORGE_GGUF_OUTPUT_DIR)"
 GGUF_HAS_MMPROJ="$(read_log_marker AARFORGE_GGUF_HAS_MMPROJ)"
 [[ -n "$GGUF_OUTPUT_DIR" && -d "$GGUF_OUTPUT_DIR" ]] || print_partial_success "GGUF export ran but did not report a usable output directory. The adapter and run log are preserved at $EVENT_LOG."
 export AARFORGE_GGUF_DIR="$GGUF_OUTPUT_DIR"
 GGUF_DIR="$GGUF_OUTPUT_DIR"
 
-# Read the main-file selection from the manifest; never pick an mmproj by glob order.
 cat > "${RUN_DIR}/read_manifest.py" <<'PY'
 import json, sys
 from pathlib import Path
@@ -1121,9 +1133,6 @@ GGUF_MAIN_FILE="$(read_log_marker AARFORGE_MAIN_MODEL_FILE gguf-manifest)"
 MMPROJ_FILES_TEXT="$(read_log_marker AARFORGE_MMPROJ_FILES gguf-manifest)"
 [[ -n "$GGUF_MAIN_FILE" ]] || print_partial_success "Could not read the main GGUF file from the manifest. Review $EVENT_LOG."
 
-# Create an Ollama Modelfile from the exact main model selection. For split GGUF,
-# stage only the selected shards in a separate folder so the wildcard cannot
-# accidentally include a same-prefix mmproj or unused BF16 model.
 cat > "${RUN_DIR}/write_modelfile.py" <<'PY'
 import json
 import os
@@ -1137,11 +1146,11 @@ main_files = [Path(item).resolve() for item in manifest.get("main_model_files", 
 if not main_files or any(not path.is_file() for path in main_files):
     raise SystemExit("The selected main GGUF file(s) are missing.")
 
+# Ollama accepts a single model file or a shard wildcard; symlink only selected
+# main-model shards so similarly named mmproj/alternate quantization files cannot match.
 if len(main_files) == 1:
     from_path = main_files[0]
 else:
-    # Use the exact shard filenames in a private import directory; this keeps
-    # wildcard matching away from mmproj files and other GGUF variants.
     matches = [re.match(r"^(?P<stem>.+)-(?P<index>[0-9]{5})-of-(?P<total>[0-9]{5})\.gguf$", p.name, re.I) for p in main_files]
     if any(match is None for match in matches):
         raise SystemExit("Multiple main GGUF files were selected but are not a recognized shard set.")
@@ -1160,8 +1169,7 @@ prompt = os.environ["AARFORGE_SYSTEM_PROMPT"]
 if '"""' in prompt or "\x00" in prompt:
     raise SystemExit('System prompt cannot contain the triple-quote delimiter or NUL bytes.')
 temperature = os.environ["AARFORGE_MODEL_TEMP"]
-# Paths emitted by AarForge are absolute. Quote a path with whitespace so it
-# remains a single Modelfile FROM argument.
+# Quote paths with whitespace so Ollama treats the path or shard wildcard as one argument.
 from_value = str(from_path)
 if any(ch.isspace() for ch in from_value):
     from_value = '"' + from_value.replace('\\', '\\\\').replace('"', '\\"') + '"'
@@ -1169,7 +1177,6 @@ content = f'FROM {from_value}\n\nSYSTEM """{prompt}"""\n\nPARAMETER temperature 
 modelfile = run_dir / "Modelfile"
 modelfile.write_text(content, encoding="utf-8")
 
-# Verify the FROM target or selected shard set still exists.
 if len(main_files) == 1 and not from_path.is_file():
     raise SystemExit(f"Modelfile FROM target does not exist: {from_path}")
 if len(main_files) > 1 and not list(from_path.parent.glob(from_path.name)):
@@ -1204,8 +1211,7 @@ if [[ "$GGUF_HAS_MMPROJ" == 'yes' ]]; then
     fi
 fi
 
-# Do not replace an existing model until a staged Ollama model has been created
-# and verified. This reduces the chance of losing a working model on import error.
+# Build into a temporary model name and verify it before touching an existing model.
 STAGING_MODEL="aarforge-staging-${RUN_ID,,}"
 if ollama show "$STAGING_MODEL" >/dev/null 2>&1; then
     DEPLOYMENT_STATUS="skipped: staging name '$STAGING_MODEL' already exists"
@@ -1222,7 +1228,6 @@ if ! ollama show "$STAGING_MODEL" >/dev/null 2>&1; then
     print_partial_success "Ollama create returned, but the staging model could not be verified. The original Ollama model (if any) was not intentionally removed. Review $EVENT_LOG."
 fi
 
-# Detect a model created by another process during training.
 if ollama show "$BOT_NAME" >/dev/null 2>&1 && (( ! REPLACE_MODEL )); then
     DEPLOYMENT_STATUS="staged only: '$BOT_NAME' appeared during the build; it was not overwritten"
     print_partial_success "The staged model '$STAGING_MODEL' was created and verified, but '$BOT_NAME' appeared while training was running. AarForge preserved that existing model. Review the staging model and deploy it manually when ready."
@@ -1235,15 +1240,14 @@ if ollama show "$BOT_NAME" >/dev/null 2>&1; then
         DEPLOYMENT_STATUS="staged only: existing '$BOT_NAME' was preserved"
         print_partial_success "The staging model '$STAGING_MODEL' is ready, but the existing model '$BOT_NAME' was not approved for replacement."
     fi
+    # A verified backup is required before removing an existing model; if
+    # promotion fails, the backup provides a recovery path.
     log "Backing up existing Ollama model '$BOT_NAME' as '$BACKUP_MODEL'..."
     if ! run_streamed ollama-backup ollama cp "$BOT_NAME" "$BACKUP_MODEL" || ! ollama show "$BACKUP_MODEL" >/dev/null 2>&1; then
         DEPLOYMENT_STATUS='staged only: existing model could not be backed up safely'
         print_partial_success "AarForge created '$STAGING_MODEL', but could not verify a backup of existing '$BOT_NAME'. The existing model was left untouched."
     fi
     HAD_OLD_MODEL=1
-    # Ollama copy behavior for an existing destination can vary by version.
-    # Remove the old tag only after a verified backup exists; then promotion is
-    # unambiguous and a failed copy can be restored from that backup.
     log "Removing old model '$BOT_NAME' after verifying its backup..."
     if ! run_streamed ollama-remove ollama rm "$BOT_NAME"; then
         DEPLOYMENT_STATUS='staged only: could not safely remove existing model after backup'
