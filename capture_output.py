@@ -122,7 +122,10 @@ def main() -> int:
         if (
             stage == "training"
             and text.startswith("{")
-            and all(re.search(rf"['\"]{key}['\"]\s*:", text) for key in ("loss", "grad_norm", "learning_rate", "epoch"))
+            and (
+                re.search(r"['\"]train_runtime['\"]\s*:", text)
+                or all(re.search(rf"['\"]{key}['\"]\s*:", text) for key in ("loss", "grad_norm", "learning_rate", "epoch"))
+            )
         ):
             return
         if not is_live_line(text):
