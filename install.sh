@@ -31,11 +31,12 @@ ui_header() {
 }
 
 ui_section() { printf '\n%b%s%b\n' "$UI_BOLD" "$*" "$UI_RESET"; }
-log()     { printf '%b[+]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
+log()     { printf '%b[LOG]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
 success() { printf '%b[OK]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
 info()    { printf '%b[INFO]%b %s\n' "$UI_BLUE" "$UI_RESET" "$*"; }
+notice()  { printf '%b[NOTICE]%b %s\n' "$UI_BLUE" "$UI_RESET" "$*"; }
 warn()    { printf '%b[WARN]%b %s\n' "$UI_YELLOW" "$UI_RESET" "$*" >&2; }
-error()   { printf '%b[FAIL]%b %s\n' "$UI_RED" "$UI_RESET" "$*" >&2; }
+error()   { printf '%b[ERROR]%b %s\n' "$UI_RED" "$UI_RESET" "$*" >&2; }
 die()     { printf '\n' >&2; error "$*"; exit 1; }
 
 confirm() {
@@ -115,13 +116,27 @@ select_workspace_directory() {
 ui_header 'Install' 'Set up an AarForge workspace and its training environment.'
 
 [[ "$(uname -s)" == Linux ]] || die 'This installer currently supports Linux only.'
-for tool in curl realpath; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required."; done
+for tool in curl realpath flock; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required."; done
 # The host may have Python 3.14 or no suitable Python at all. Use UV to
 # provision a supported interpreter instead of rejecting the system Python.
 [[ -f "$SCRIPT_DIR/build.sh" ]] || die "build.sh must be present beside install.sh ($SCRIPT_DIR)."
 ui_section 'Choose workspace'
 select_workspace_directory
 INSTALL_DIR="$SELECTED_PATH"
+AARFORGE_DIR="${INSTALL_DIR}/AarForge"
+mkdir -p -- "$AARFORGE_DIR/Logs" "$AARFORGE_DIR/Runs" || die "Could not create AarForge workspace directories in $AARFORGE_DIR."
+chmod 700 "$AARFORGE_DIR" "$AARFORGE_DIR/Logs" "$AARFORGE_DIR/Runs"
+exec 9>"${AARFORGE_DIR}/.build.lock"
+chmod 600 "${AARFORGE_DIR}/.build.lock"
+flock -n 9 || die 'AarForge is currently building in this workspace. Wait for the build to finish before installing or updating it.'
+
+CAPTURE_HELPER="${AARFORGE_DIR}/capture_output.py"
+[[ -f "$SCRIPT_DIR/capture_output.py" ]] || die "Missing JSONL capture helper beside install.sh: $SCRIPT_DIR/capture_output.py."
+cp -- "$SCRIPT_DIR/capture_output.py" "$CAPTURE_HELPER" || die "Could not install the JSONL capture helper at $CAPTURE_HELPER."
+chmod 700 "$CAPTURE_HELPER"
+INSTALL_LOG="${AARFORGE_DIR}/Logs/installer.jsonl"
+: >> "$INSTALL_LOG"
+chmod 600 "$INSTALL_LOG"
 
 ui_section 'System requirements'
 if ! command -v uv >/dev/null 2>&1; then
@@ -146,7 +161,7 @@ PYTHON_BIN="$("$UV_BIN" python find 3.13)" || die 'UV could not locate its Pytho
 import sys
 if sys.version_info < (3, 10) or sys.version_info >= (3, 14):
     raise SystemExit(f"AarForge requires Python 3.10–3.13; UV selected {sys.version.split()[0]}.")
-print(f"[+] Using Python {sys.version.split()[0]} ({sys.executable})")
+print(f"[INFO] Using Python {sys.version.split()[0]} ({sys.executable})")
 PY
 
 if ! command -v ollama >/dev/null 2>&1; then
@@ -184,12 +199,20 @@ ui_section 'Install training dependencies'
 log "Installing Unsloth $UNSLOTH_VERSION and its declared compatible dependencies..."
 # Do not add an independent transformers>=5.18 requirement: it contradicts
 # the tested upper bounds in the selected Unsloth release metadata.
-"$UV_BIN" pip install --python "$VENV_PY" --upgrade --reinstall \
-    "unsloth==$UNSLOTH_VERSION" gguf
+notice "Dependency installation output will be saved to $INSTALL_LOG"
+if ! "$VENV_PY" "$CAPTURE_HELPER" "$INSTALL_LOG" install dependency-install -- \
+    "$UV_BIN" pip install --python "$VENV_PY" --upgrade --reinstall \
+    "unsloth==$UNSLOTH_VERSION" gguf; then
+    die "Training dependency installation failed. Review $INSTALL_LOG."
+fi
+success 'Training dependencies installed.'
 
 log 'Checking dependency consistency and runtime imports...'
-"$UV_BIN" pip check --python "$VENV_PY"
-"$VENV_PY" - <<'PY'
+if ! "$VENV_PY" "$CAPTURE_HELPER" "$INSTALL_LOG" install dependency-check -- \
+    "$UV_BIN" pip check --python "$VENV_PY"; then
+    die "Dependency consistency check failed. Review $INSTALL_LOG."
+fi
+if ! "$VENV_PY" "$CAPTURE_HELPER" "$INSTALL_LOG" install runtime-import-check -- "$VENV_PY" - <<'PY'
 import sys
 # Unsloth must patch/initialize before importing Transformers, TRL or Torch.
 import unsloth
@@ -226,6 +249,39 @@ if torch.cuda.is_available():
 else:
     print("[WARN] No usable CUDA GPU detected. Installation is valid, but this QLoRA workflow cannot train until CUDA is available.")
 PY
+then
+    die "Runtime import check failed. Review $INSTALL_LOG."
+fi
+if ! RUNTIME_SUMMARY="$("$VENV_PY" - "$INSTALL_LOG" <<'PY'
+import json
+import sys
+
+cuda_available = ""
+gpu_name = ""
+with open(sys.argv[1], encoding="utf-8") as stream:
+    for line in stream:
+        entry = json.loads(line)
+        if entry.get("stage") != "runtime-import-check":
+            continue
+        message = entry.get("message", "")
+        if message.startswith("CUDA usable:"):
+            cuda_available = message.partition(":")[2].strip()
+        elif message.startswith("GPU:"):
+            gpu_name = message.partition(":")[2].strip()
+if not cuda_available:
+    raise SystemExit("Runtime check log does not include CUDA availability.")
+print(f"{cuda_available}|{gpu_name}")
+PY
+)"; then
+    die "Could not read runtime-check summary. Review $INSTALL_LOG."
+fi
+CUDA_AVAILABLE="${RUNTIME_SUMMARY%%|*}"
+GPU_NAME="${RUNTIME_SUMMARY#*|}"
+if [[ "$CUDA_AVAILABLE" == True ]]; then
+    success "Runtime imports passed; CUDA is usable on ${GPU_NAME:-the detected GPU}."
+else
+    warn "Runtime imports passed, but no usable CUDA GPU was detected. Training requires CUDA. Details: $INSTALL_LOG"
+fi
 
 missing_tools=()
 for tool in git cmake make c++; do command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool"); done
@@ -270,12 +326,18 @@ with open(path, encoding="utf-8") as f:
         count += 1
 if not count:
     raise SystemExit("Sample dataset is empty.")
-print(f"[+] Sample JSONL validated: {count} conversation(s).")
+print(f"[OK] Sample JSONL validated: {count} conversation(s).")
 PY
 
-SETTINGS_FILE="$INSTALL_DIR/.aarforge-settings.json"
+SETTINGS_FILE="$AARFORGE_DIR/settings.json"
+LEGACY_SETTINGS_FILE="$INSTALL_DIR/.aarforge-settings.json"
 if [[ ! -s "$SETTINGS_FILE" ]]; then
-    cat > "$SETTINGS_FILE" <<'JSON'
+    if [[ -s "$LEGACY_SETTINGS_FILE" ]]; then
+        cp -- "$LEGACY_SETTINGS_FILE" "$SETTINGS_FILE" || die "Could not migrate settings from $LEGACY_SETTINGS_FILE."
+        chmod 600 "$SETTINGS_FILE"
+        info "Migrated existing settings to $SETTINGS_FILE."
+    else
+        cat > "$SETTINGS_FILE" <<'JSON'
 {
   "schema_version": 1,
   "bot_name": "my_custom_bot",
@@ -288,27 +350,34 @@ if [[ ! -s "$SETTINGS_FILE" ]]; then
   "system_prompt": "You are a helpful assistant trained with AarForge."
 }
 JSON
-    chmod 600 "$SETTINGS_FILE"
-    info "Initialized workspace settings at $SETTINGS_FILE."
+        chmod 600 "$SETTINGS_FILE"
+        info "Initialized workspace settings at $SETTINGS_FILE."
+    fi
 else
-    info 'Preserving existing .aarforge-settings.json.'
+    info 'Preserving existing AarForge/settings.json.'
 fi
 
 ui_section 'Optional model cache'
-if confirm "Download the default model now? This may require several GB." yes; then
-    HF_BIN="$INSTALL_DIR/.venv/bin/hf"
-    if [[ -x "$HF_BIN" ]]; then
-        log "Downloading $DEFAULT_MODEL..."
-        if "$HF_BIN" download "$DEFAULT_MODEL"; then
-            log 'Default model cache completed.'
+HF_BIN="$INSTALL_DIR/.venv/bin/hf"
+if [[ -x "$HF_BIN" ]]; then
+    if CACHED_MODELS="$("$HF_BIN" cache list --format quiet 2>/dev/null)"; then
+        if grep -Fqx -- "$DEFAULT_MODEL" <<<"$CACHED_MODELS"; then
+            info "Default model is already cached; skipping download."
+        elif confirm "Pre-download $DEFAULT_MODEL now? This is optional; the first training run will download missing files." no; then
+            log "Pre-downloading $DEFAULT_MODEL; command output is saved to $INSTALL_LOG."
+            if "$VENV_PY" "$CAPTURE_HELPER" "$INSTALL_LOG" install model-pre-cache -- "$HF_BIN" download "$DEFAULT_MODEL"; then
+                success 'Default model cache completed.'
+            else
+                warn 'Model pre-download failed or was canceled; training will download missing files when needed.'
+            fi
         else
-            warn 'Model pre-download failed; training can retry the download later.'
+            info 'Skipping model pre-download; training will download missing files when needed.'
         fi
     else
-        warn 'Hugging Face CLI not found; the model will download during training.'
+        warn 'Could not inspect the Hugging Face cache; skipping the optional pre-download. Training will download missing files when needed.'
     fi
 else
-    info 'Skipping default model download.'
+    warn 'Hugging Face CLI not found; skipping the optional pre-download. Training will download missing files when needed.'
 fi
 
 ui_header 'Installation complete'
@@ -317,4 +386,6 @@ printf 'Workspace:       %s\n' "$INSTALL_DIR"
 printf 'Virtual env:     %s\n' "$INSTALL_DIR/.venv"
 printf 'Sample dataset:  %s\n' "$SAMPLE_DATASET"
 printf 'Settings:        %s\n' "$SETTINGS_FILE"
+printf 'Run logs:        %s/Logs\n' "$AARFORGE_DIR"
+printf 'Install log:     %s\n' "$INSTALL_LOG"
 printf '%s\n' 'Next: cd into the workspace and run ./build.sh'

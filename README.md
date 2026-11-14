@@ -84,9 +84,11 @@ It will then:
 - Install Ollama if necessary.
 - Create a Python virtual environment.
 - Install the required Python dependencies.
-- Download the default base model.
+- Optionally pre-download the default base model if it is not already cached.
 - Copy `build.sh` into your workspace.
 - Generate a sample conversational dataset.
+
+Pre-downloading is not required: the installer checks the Hugging Face cache and skips the download if the default model is present. Otherwise, the optional prompt defaults to **No**; the first training run downloads missing files, which Hugging Face caches for later runs. Installer dependency and Unsloth diagnostics are saved as JSONL in `AarForge/Logs/installer.jsonl` instead of being printed verbatim.
 
 Once installation finishes, navigate to your selected workspace.
 
@@ -159,9 +161,11 @@ The interactive wizard will request the following information:
 | System Prompt | System instructions for Ollama inference |
 | Temperature | Controls response randomness during inference |
 
-Build settings are saved in `.aarforge-settings.json` in the workspace and reused as the next run's prompt defaults. `install.sh` creates this file with defaults for a new workspace and preserves existing settings.
+Build settings are saved in `AarForge/settings.json` in the workspace and reused as the next run's prompt defaults. `install.sh` creates the `AarForge/Logs` and `AarForge/Runs` folders and initializes the settings file. Existing `.aarforge-settings.json` files are migrated automatically.
 
 When both training limits are configured, a positive step count takes precedence over epochs. The default run is therefore 60 steps; enter `0` steps to train for the configured number of epochs.
+
+Each run gets a 16-bit numeric code and stores its artifacts in `AarForge/Runs/<code>` and its settings snapshot, JSON report, and JSONL event log in `AarForge/Logs/<code>`. The event log records timestamp, run code, stage, severity, and message. Only the 30 newest run-log folders are retained; older logs are removed automatically, while training artifacts are kept. Build output from Unsloth, model loading, export, and Ollama is captured in that JSONL log instead of being streamed to the terminal. The terminal shows concise status messages and the log path at each stage.
 
 Both scripts use the same terminal status labels and confirmation prompts. Press Enter to accept a displayed default; set `NO_COLOR=1` to disable terminal colors.
 

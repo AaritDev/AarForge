@@ -8,14 +8,19 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 VENV_PY="${SCRIPT_DIR}/.venv/bin/python"
 DEFAULT_MODEL="unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
 DEFAULT_SYSTEM_PROMPT="You are a helpful assistant trained with AarForge."
-SETTINGS_FILE="${SCRIPT_DIR}/.aarforge-settings.json"
+AARFORGE_DIR="${SCRIPT_DIR}/AarForge"
+SETTINGS_FILE="${AARFORGE_DIR}/settings.json"
+LEGACY_SETTINGS_FILE="${SCRIPT_DIR}/.aarforge-settings.json"
+LOGS_DIR="${AARFORGE_DIR}/Logs"
+RUNS_DIR="${AARFORGE_DIR}/Runs"
 
 RUN_DIR=""
+RUN_CODE=""
+RUN_LOG_DIR=""
+EVENT_LOG=""
+LOG_CAPTURE_SCRIPT=""
 BOT_NAME=""
 BUILD_STATUS="INITIALIZING"
-TRAIN_LOG=""
-EXPORT_LOG=""
-DEPLOY_LOG=""
 
 UI_RESET=""
 UI_BOLD=""
@@ -39,11 +44,12 @@ ui_header() {
 }
 
 ui_section() { printf '\n%b%s%b\n' "$UI_BOLD" "$*" "$UI_RESET"; }
-log()     { printf '%b[+]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
+log()     { printf '%b[LOG]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
 success() { printf '%b[OK]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
 info()    { printf '%b[INFO]%b %s\n' "$UI_BLUE" "$UI_RESET" "$*"; }
+notice()  { printf '%b[NOTICE]%b %s\n' "$UI_BLUE" "$UI_RESET" "$*"; }
 warn()    { printf '%b[WARN]%b %s\n' "$UI_YELLOW" "$UI_RESET" "$*" >&2; }
-error()   { printf '%b[FAIL]%b %s\n' "$UI_RED" "$UI_RESET" "$*" >&2; }
+error()   { printf '%b[ERROR]%b %s\n' "$UI_RED" "$UI_RESET" "$*" >&2; }
 
 confirm() {
     local prompt="$1" default="${2:-no}" answer suffix
@@ -62,9 +68,8 @@ confirm() {
 
 print_artifact_location() {
     [[ -n "$RUN_DIR" ]] && printf '    Run artifacts: %s\n' "$RUN_DIR" >&2
-    [[ -n "$TRAIN_LOG" && -f "$TRAIN_LOG" ]] && printf '    Training log: %s\n' "$TRAIN_LOG" >&2
-    [[ -n "$EXPORT_LOG" && -f "$EXPORT_LOG" ]] && printf '    Export log:   %s\n' "$EXPORT_LOG" >&2
-    [[ -n "$DEPLOY_LOG" && -f "$DEPLOY_LOG" ]] && printf '    Deploy log:   %s\n' "$DEPLOY_LOG" >&2
+    [[ -n "$RUN_CODE" ]] && printf '    Run code:     %s\n' "$RUN_CODE" >&2
+    [[ -n "$EVENT_LOG" && -f "$EVENT_LOG" ]] && printf '    Run log:      %s\n' "$EVENT_LOG" >&2
     return 0
 }
 
@@ -98,20 +103,32 @@ expand_home() {
     esac
 }
 
-# Run a command with live output and a persistent log. Return the command's
-# status (or tee's status if logging itself fails).
+# Capture all command output in the per-run JSONL log without forwarding it to
+# the terminal. The caller reports concise stage progress separately.
 run_streamed() {
-    local logfile="$1" rc=0
+    local stage="$1"
     shift
-    "$@" 2>&1 | tee "$logfile" || {
-        local -a pipe_status=("${PIPESTATUS[@]}")
-        if (( ${pipe_status[0]:-0} != 0 )); then
-            rc="${pipe_status[0]}"
-        else
-            rc="${pipe_status[1]:-1}"
-        fi
-    }
-    return "$rc"
+    "$VENV_PY" "$LOG_CAPTURE_SCRIPT" "$EVENT_LOG" "$RUN_CODE" "$stage" -- "$@"
+}
+
+read_log_marker() {
+    local marker="$1" stage="${2:-gguf-export}"
+    "$VENV_PY" - "$EVENT_LOG" "$marker" "$stage" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+log_path = Path(sys.argv[1])
+marker = sys.argv[2] + "="
+stage = sys.argv[3]
+value = ""
+with log_path.open(encoding="utf-8") as stream:
+    for line in stream:
+        entry = json.loads(line)
+        if entry.get("stage") == stage and entry.get("message", "").startswith(marker):
+            value = entry["message"][len(marker):]
+print(value)
+PY
 }
 
 # Interactive JSONL selector. Folders can be browsed recursively; paths outside
@@ -199,27 +216,64 @@ PY
 }
 
 write_report() {
-    [[ -n "$RUN_DIR" && -d "$RUN_DIR" ]] || return 0
+    [[ -n "$RUN_LOG_DIR" && -d "$RUN_LOG_DIR" ]] || return 0
     local report_status="$1" note="$2"
-    {
-        printf 'AarForge build report\n'
-        printf '====================\n'
-        printf 'Status: %s\n' "$report_status"
-        printf 'Model name: %s\n' "${BOT_NAME:-not set}"
-        printf 'Run directory: %s\n' "$RUN_DIR"
-        printf 'Base model: %s\n' "${BASE_MODEL:-not recorded}"
-        printf 'Dataset: %s\n' "${DATASET_SOURCE:-not recorded}"
-        printf 'Adapter directory: %s\n' "${ADAPTER_DIR:-not created}"
-        printf 'GGUF output directory: %s\n' "${GGUF_DIR:-not created}"
-        printf 'Main GGUF: %s\n' "${GGUF_MAIN_FILE:-not exported}"
-        printf 'Vision projector(s): %s\n' "${MMPROJ_FILES_TEXT:-none detected}"
-        printf 'Ollama status: %s\n' "${DEPLOYMENT_STATUS:-not attempted}"
-        printf '\nNotes\n-----\n%s\n' "$note"
-        printf '\nLogs\n----\n'
-        printf 'Training: %s\n' "${TRAIN_LOG:-not created}"
-        printf 'Export: %s\n' "${EXPORT_LOG:-not created}"
-        printf 'Deployment: %s\n' "${DEPLOY_LOG:-not created}"
-    } > "${RUN_DIR}/BUILD_REPORT.txt"
+    if ! AARFORGE_REPORT_STATUS="$report_status" \
+        AARFORGE_REPORT_NOTE="$note" \
+        AARFORGE_REPORT_CODE="$RUN_CODE" \
+        AARFORGE_REPORT_MODEL="${BOT_NAME:-}" \
+        AARFORGE_REPORT_RUN_DIR="$RUN_DIR" \
+        AARFORGE_REPORT_BASE_MODEL="${BASE_MODEL:-}" \
+        AARFORGE_REPORT_DATASET="${DATASET_SOURCE:-}" \
+        AARFORGE_REPORT_ADAPTER_DIR="${ADAPTER_DIR:-}" \
+        AARFORGE_REPORT_GGUF_DIR="${GGUF_DIR:-}" \
+        AARFORGE_REPORT_MAIN_GGUF="${GGUF_MAIN_FILE:-}" \
+        AARFORGE_REPORT_MMPROJ="${MMPROJ_FILES_TEXT:-}" \
+        AARFORGE_REPORT_DEPLOYMENT="${DEPLOYMENT_STATUS:-not attempted}" \
+        "$VENV_PY" - "${RUN_LOG_DIR}/report.json" <<'PY'
+import json
+import os
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+report_path = Path(sys.argv[1])
+report = {
+    "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    "run_code": os.environ["AARFORGE_REPORT_CODE"],
+    "status": os.environ["AARFORGE_REPORT_STATUS"],
+    "model_name": os.environ["AARFORGE_REPORT_MODEL"] or None,
+    "run_directory": os.environ["AARFORGE_REPORT_RUN_DIR"],
+    "base_model": os.environ["AARFORGE_REPORT_BASE_MODEL"] or None,
+    "dataset": os.environ["AARFORGE_REPORT_DATASET"] or None,
+    "adapter_directory": os.environ["AARFORGE_REPORT_ADAPTER_DIR"] or None,
+    "gguf_directory": os.environ["AARFORGE_REPORT_GGUF_DIR"] or None,
+    "main_gguf": os.environ["AARFORGE_REPORT_MAIN_GGUF"] or None,
+    "vision_projectors": os.environ["AARFORGE_REPORT_MMPROJ"] or None,
+    "ollama_status": os.environ["AARFORGE_REPORT_DEPLOYMENT"],
+    "notes": os.environ["AARFORGE_REPORT_NOTE"],
+    "event_log": str(report_path.parent / "events.jsonl"),
+}
+temporary_path = None
+try:
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=report_path.parent,
+        prefix=f"{report_path.name}.", delete=False,
+    ) as stream:
+        temporary_path = Path(stream.name)
+        json.dump(report, stream, indent=2, ensure_ascii=False)
+        stream.write("\n")
+    os.replace(temporary_path, report_path)
+except OSError as exc:
+    raise SystemExit(f"Could not write run report to {report_path}: {exc}")
+finally:
+    if temporary_path is not None:
+        temporary_path.unlink(missing_ok=True)
+PY
+    then
+        die "Could not write the JSON run report to ${RUN_LOG_DIR}/report.json."
+    fi
 }
 
 print_partial_success() {
@@ -242,7 +296,7 @@ print_partial_success() {
         done
         command -v llama-mtmd-cli >/dev/null 2>&1 || printf '%s\n' '    Note: llama-mtmd-cli is not currently on PATH; install/build a compatible llama.cpp version first.'
     fi
-    printf 'Build report:  %s/BUILD_REPORT.txt\n' "$RUN_DIR"
+    printf 'Run report:    %s/report.json\n' "$RUN_LOG_DIR"
     print_artifact_location
     printf '%s\n' 'No training/export artifacts were deleted. Review the report before deployment.'
     exit 0
@@ -256,13 +310,63 @@ command -v flock >/dev/null 2>&1 || die "The 'flock' command is required (usuall
 command -v realpath >/dev/null 2>&1 || die "The 'realpath' command is required."
 command -v nvidia-smi >/dev/null 2>&1 || die "NVIDIA driver tools were not found. AarForge's current QLoRA workflow requires an NVIDIA CUDA GPU."
 
+mkdir -p -- "$LOGS_DIR" "$RUNS_DIR" || die "Could not create AarForge workspace directories in $AARFORGE_DIR."
+chmod 700 "$AARFORGE_DIR" "$LOGS_DIR" "$RUNS_DIR"
+
 # Prevent simultaneous builds from corrupting shared workspace state.
-exec 9>"${SCRIPT_DIR}/.aarforge-build.lock"
+exec 9>"${AARFORGE_DIR}/.build.lock"
+chmod 600 "${AARFORGE_DIR}/.build.lock"
 flock -n 9 || die 'Another AarForge build is already running in this workspace.'
+
+if [[ ! -s "$SETTINGS_FILE" && -s "$LEGACY_SETTINGS_FILE" ]]; then
+    cp -- "$LEGACY_SETTINGS_FILE" "$SETTINGS_FILE" || die "Could not migrate settings from $LEGACY_SETTINGS_FILE."
+    chmod 600 "$SETTINGS_FILE"
+    info "Migrated existing settings to $SETTINGS_FILE."
+fi
+
+RUN_CODE=$(( $(date +%s) % 65536 ))
+CODE_ATTEMPTS=0
+while [[ -e "$LOGS_DIR/$RUN_CODE" || -L "$LOGS_DIR/$RUN_CODE" || -e "$RUNS_DIR/$RUN_CODE" || -L "$RUNS_DIR/$RUN_CODE" ]]; do
+    (( CODE_ATTEMPTS += 1 ))
+    (( CODE_ATTEMPTS < 65536 )) || die 'All 16-bit run codes are already in use; archive older run artifacts before building again.'
+    RUN_CODE=$(( (RUN_CODE + 1) % 65536 ))
+done
+RUN_LOG_DIR="${LOGS_DIR}/${RUN_CODE}"
+RUN_DIR="${RUNS_DIR}/${RUN_CODE}"
+mkdir -m 700 -- "$RUN_LOG_DIR" "$RUN_DIR" || die "Could not create run folders for code $RUN_CODE."
+EVENT_LOG="${RUN_LOG_DIR}/events.jsonl"
+: > "$EVENT_LOG"
+chmod 600 "$EVENT_LOG"
+
+# Keep only the 30 newest run-log folders. Run artifacts under Runs/ are retained.
+"$VENV_PY" - "$LOGS_DIR" "$RUN_LOG_DIR" <<'PY' || die 'Could not enforce the 30-run log retention limit.'
+import shutil
+import sys
+from pathlib import Path
+
+logs_root = Path(sys.argv[1]).resolve()
+current = Path(sys.argv[2]).resolve()
+entries = sorted(
+    (path for path in logs_root.iterdir() if path.is_dir() and not path.is_symlink()),
+    key=lambda path: (path.stat().st_mtime_ns, path.name),
+)
+for old_log in entries[:max(0, len(entries) - 30)]:
+    if old_log != current:
+        shutil.rmtree(old_log)
+PY
+
+LOG_CAPTURE_SCRIPT="${AARFORGE_DIR}/capture_output.py"
+LOG_CAPTURE_SOURCE="${SCRIPT_DIR}/capture_output.py"
+if [[ -f "$LOG_CAPTURE_SOURCE" ]]; then
+    cp -- "$LOG_CAPTURE_SOURCE" "$LOG_CAPTURE_SCRIPT" || die "Could not install the JSONL capture helper at $LOG_CAPTURE_SCRIPT."
+elif [[ ! -s "$LOG_CAPTURE_SCRIPT" ]]; then
+    die "JSONL capture helper not found at $LOG_CAPTURE_SCRIPT. Run ./install.sh again."
+fi
+chmod 700 "$LOG_CAPTURE_SCRIPT"
 
 # Confirm the virtual environment is internally consistent. Unsloth is imported first.
 ui_section 'System check'
-if ! "$VENV_PY" - <<'PY'
+cat > "${RUN_DIR}/preflight.py" <<'PY'
 import importlib.util
 import sys
 missing = [name for name in ("torch", "unsloth", "trl", "datasets", "transformers", "huggingface_hub", "bitsandbytes", "packaging")
@@ -282,12 +386,16 @@ if Version(trl.__version__) > Version("1.15.0"):
     raise SystemExit(f"Incompatible TRL {trl.__version__}; AarForge requires trl <=1.15.0. Run ./install.sh.")
 if not torch.cuda.is_available():
     raise SystemExit("PyTorch cannot access CUDA. Check the NVIDIA driver and CUDA-enabled PyTorch installation.")
-print(f"[+] Python {sys.version.split()[0]} | PyTorch {torch.__version__} | CUDA {torch.version.cuda}")
-print(f"[+] GPU: {torch.cuda.get_device_name(0)}")
+print(f"[INFO] Python {sys.version.split()[0]} | PyTorch {torch.__version__} | CUDA {torch.version.cuda}")
+print(f"[INFO] GPU: {torch.cuda.get_device_name(0)}")
 PY
-then
-    die 'Python/CUDA preflight failed. Review the message above and run ./install.sh if dependencies are inconsistent.'
+if ! run_streamed preflight "$VENV_PY" "${RUN_DIR}/preflight.py"; then
+    die "Python/CUDA preflight failed. Review the run log and run ./install.sh if dependencies are inconsistent."
 fi
+GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)" || die 'Could not read the GPU name from nvidia-smi.'
+GPU_NAME="${GPU_NAME%%$'\n'*}"
+success "Preflight passed. GPU: $GPU_NAME"
+info "Run code: $RUN_CODE"
 
 # Ollama is optional until Stage 3. Training and export remain useful without it.
 OLLAMA_READY=0
@@ -412,18 +520,13 @@ if [[ "$DATASET_SOURCE" != "$(realpath -m -- "$DATASET_COPY")" ]]; then
     cp -- "$DATASET_SOURCE" "$DATASET_COPY"
 fi
 
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-RUN_DIR="${SCRIPT_DIR}/runs/${BOT_NAME}-${RUN_ID}"
-mkdir -p -- "$(dirname -- "$RUN_DIR")"
-mkdir -- "$RUN_DIR"
+RUN_ID="$RUN_CODE"
 ADAPTER_DIR="${RUN_DIR}/adapter"
 GGUF_DIR="${RUN_DIR}/gguf"
-TRAIN_LOG="${RUN_DIR}/training.log"
-EXPORT_LOG="${RUN_DIR}/export.log"
-DEPLOY_LOG="${RUN_DIR}/ollama-deploy.log"
 BUILD_STATUS='INPUTS VALIDATED'
 
 export AARFORGE_BOT_NAME="$BOT_NAME"
+export AARFORGE_RUN_CODE="$RUN_CODE"
 export AARFORGE_BASE_MODEL="$BASE_MODEL"
 export AARFORGE_DATASET="$DATASET_COPY"
 export AARFORGE_RUN_DIR="$RUN_DIR"
@@ -443,14 +546,13 @@ if ! AARFORGE_SETTINGS_BOT_NAME="$BOT_NAME" \
     AARFORGE_SETTINGS_MAX_SEQ_LENGTH="$MAX_SEQ_LENGTH" \
     AARFORGE_SETTINGS_MODEL_TEMPERATURE="$MODEL_TEMP" \
     AARFORGE_SETTINGS_SYSTEM_PROMPT="$MODEL_SYSTEM_PROMPT" \
-    "$VENV_PY" - "$SETTINGS_FILE" <<'PY'
+    "$VENV_PY" - "$SETTINGS_FILE" "${RUN_LOG_DIR}/settings.json" <<'PY'
 import json
 import os
 import sys
 import tempfile
 from pathlib import Path
 
-settings_path = Path(sys.argv[1])
 settings = {
     "schema_version": 1,
     "bot_name": os.environ["AARFORGE_SETTINGS_BOT_NAME"],
@@ -462,24 +564,26 @@ settings = {
     "model_temperature": os.environ["AARFORGE_SETTINGS_MODEL_TEMPERATURE"],
     "system_prompt": os.environ["AARFORGE_SETTINGS_SYSTEM_PROMPT"],
 }
-temporary_path = None
-try:
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=settings_path.parent,
-        prefix=f"{settings_path.name}.", delete=False,
-    ) as stream:
-        temporary_path = Path(stream.name)
-        json.dump(settings, stream, indent=2, ensure_ascii=False)
-        stream.write("\n")
-    os.replace(temporary_path, settings_path)
-except OSError as exc:
-    raise SystemExit(f"Could not save AarForge settings to {settings_path}: {exc}")
-finally:
-    if temporary_path is not None:
-        temporary_path.unlink(missing_ok=True)
+for settings_name in sys.argv[1:]:
+    settings_path = Path(settings_name)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=settings_path.parent,
+            prefix=f"{settings_path.name}.", delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            json.dump(settings, stream, indent=2, ensure_ascii=False)
+            stream.write("\n")
+        os.replace(temporary_path, settings_path)
+    except OSError as exc:
+        raise SystemExit(f"Could not save AarForge settings to {settings_path}: {exc}")
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 PY
 then
-    die "Could not save workspace settings to $SETTINGS_FILE."
+    die "Could not save workspace or run settings to $SETTINGS_FILE."
 fi
 
 log "Run directory: $RUN_DIR"
@@ -501,7 +605,7 @@ ALLOWED_ROLES = {"system", "user", "assistant"}
 
 
 def fail(message: str) -> NoReturn:
-    raise SystemExit(f"[FAIL] {message}")
+    raise SystemExit(f"[ERROR] {message}")
 
 
 def load_and_validate_dataset(path: Path) -> list[dict[str, Any]]:
@@ -572,7 +676,7 @@ def load_and_validate_dataset(path: Path) -> list[dict[str, Any]]:
 def validate_only() -> None:
     dataset_path = Path(os.environ["AARFORGE_DATASET"]).expanduser().resolve()
     records = load_and_validate_dataset(dataset_path)
-    print(f"[+] Dataset validation passed: {len(records)} conversation(s), exact messages JSONL schema.")
+    print(f"[INFO] Dataset validation passed: {len(records)} conversation(s), exact messages JSONL schema.")
 
 
 def train() -> None:
@@ -605,7 +709,7 @@ def train() -> None:
             "Select the original base checkpoint, or merge the existing adapter into its base model before using AarForge."
         )
 
-    print(f"[+] Loading tokenizer for {base_model} to check sequence lengths...")
+    print(f"[INFO] Loading tokenizer for {base_model} to check sequence lengths...")
     try:
         tokenizer_check = AutoTokenizer.from_pretrained(base_model, use_fast=True, trust_remote_code=False)
     except Exception as exc:
@@ -629,7 +733,7 @@ def train() -> None:
             "Increase max sequence length or shorten the affected examples. AarForge will not silently truncate your data."
         )
 
-    print("[+] Loading model with Unsloth 4-bit quantization...")
+    print("[INFO] Loading model with Unsloth 4-bit quantization...")
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=base_model,
@@ -667,7 +771,7 @@ def train() -> None:
             "Could not identify supported attention/MLP projection modules in this model. "
             "This build supports common decoder-style Transformer projections; choose a compatible architecture."
         )
-    print(f"[+] LoRA target modules: {', '.join(target_modules)}")
+    print(f"[INFO] LoRA target modules: {', '.join(target_modules)}")
     try:
         model = FastLanguageModel.get_peft_model(
             model,
@@ -715,7 +819,7 @@ def train() -> None:
         assistant_only_loss=True,
     )
 
-    print("[+] Initializing TRL SFTTrainer with assistant-only loss...")
+    print("[INFO] Initializing TRL SFTTrainer with assistant-only loss...")
     trainer = SFTTrainer(model=model, args=training_args, train_dataset=train_dataset, processing_class=tokenizer)
 
     # Assistant-only loss is represented by labels: prompt tokens are -100 and
@@ -729,18 +833,18 @@ def train() -> None:
     masked = int((labels == -100).sum().item())
     if supervised <= 0 or masked <= 0:
         fail("Assistant-only loss verification failed: expected assistant target labels and masked prompt labels. Check the model chat template and TRL configuration.")
-    print(f"[+] Assistant-only loss labels verified (assistant target tokens: {supervised}; masked tokens: {masked}).")
+    print(f"[INFO] Assistant-only loss labels verified (assistant target tokens: {supervised}; masked tokens: {masked}).")
 
     if requested_steps > 0:
-        print(f"[+] Training for {requested_steps} optimizer step(s); this takes precedence over {num_epochs} epoch(s).")
+        print(f"[INFO] Training for {requested_steps} optimizer step(s); this takes precedence over {num_epochs} epoch(s).")
     else:
-        print(f"[+] Training for {num_epochs} epoch(s)...")
+        print(f"[INFO] Training for {num_epochs} epoch(s)...")
     result = trainer.train()
     if trainer.state.global_step < 1:
         fail("Trainer completed without performing an optimizer step.")
 
     adapter_dir.mkdir(parents=True, exist_ok=False)
-    print(f"[+] Saving LoRA adapter to {adapter_dir}...")
+    print(f"[INFO] Saving LoRA adapter to {adapter_dir}...")
     trainer.save_model(str(adapter_dir))
     tokenizer.save_pretrained(str(adapter_dir))
     if not (adapter_dir / "adapter_config.json").is_file() or not list(adapter_dir.glob("adapter_model.*")):
@@ -752,6 +856,7 @@ def train() -> None:
             dataset_hash.update(chunk)
     metadata = {
         "bot_name": os.environ["AARFORGE_BOT_NAME"],
+        "run_code": os.environ["AARFORGE_RUN_CODE"],
         "base_model": base_model,
         "dataset": str(dataset_path),
         "dataset_sha256": dataset_hash.hexdigest(),
@@ -765,7 +870,7 @@ def train() -> None:
         "train_metrics": {k: float(v) if isinstance(v, (int, float)) else str(v) for k, v in result.metrics.items()},
     }
     (run_dir / "training_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    print("[+] Training and adapter verification completed.")
+    print("[INFO] Training and adapter verification completed.")
 
 
 if __name__ == "__main__":
@@ -789,7 +894,7 @@ SHARD_RE = re.compile(r"^(?P<stem>.+)-(?P<index>[0-9]{5})-of-(?P<total>[0-9]{5})
 
 
 def fail(message: str) -> None:
-    raise SystemExit(f"[FAIL] {message}")
+    raise SystemExit(f"[ERROR] {message}")
 
 
 def validate_gguf(path: Path) -> None:
@@ -856,14 +961,14 @@ def main() -> None:
     merged_dir.mkdir(parents=True, exist_ok=False)
     sibling_export_dir = Path(f"{merged_dir}_gguf")
 
-    print(f"[+] Reloading adapter from {adapter_dir}...")
+    print(f"[INFO] Reloading adapter from {adapter_dir}...")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=str(adapter_dir),
         max_seq_length=max_seq_length,
         dtype=None,
         load_in_4bit=True,
     )
-    print("[+] Exporting merged model to GGUF (Q4_K_M)...")
+    print("[INFO] Exporting merged model to GGUF (Q4_K_M)...")
     model.save_pretrained_gguf(str(merged_dir), tokenizer, quantization_method="q4_k_m")
 
     # Unsloth commonly writes GGUF files to <save_directory>_gguf. Older builds
@@ -915,19 +1020,19 @@ def main() -> None:
     }
     (chosen_dir / "export_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-    print("[+] GGUF export verification passed.")
-    print(f"[+] Selected main model file(s): {len(main_files)}")
+    print("[INFO] GGUF export verification passed.")
+    print(f"[INFO] Selected main model file(s): {len(main_files)}")
     for path in main_files:
         print(f"    MAIN: {path} ({path.stat().st_size:,} bytes)")
     if mmproj_files:
-        print(f"[+] Vision projector file(s): {len(mmproj_files)} (preserved separately)")
+        print(f"[INFO] Vision projector file(s): {len(mmproj_files)} (preserved separately)")
         for path in mmproj_files:
             print(f"    MMPROJ: {path} ({path.stat().st_size:,} bytes)")
     if other_main_files:
         print(f"[INFO] Additional non-selected GGUF file(s) were retained: {len(other_main_files)}")
         for path in other_main_files:
             print(f"    OTHER: {path}")
-    print(f"[+] Export manifest: {chosen_dir / 'export_manifest.json'}")
+    print(f"[INFO] Export manifest: {chosen_dir / 'export_manifest.json'}")
     # Machine-readable markers consumed by Bash after the log has been written.
     print(f"AARFORGE_GGUF_OUTPUT_DIR={chosen_dir}")
     print(f"AARFORGE_GGUF_HAS_MMPROJ={'yes' if mmproj_files else 'no'}")
@@ -940,61 +1045,65 @@ if __name__ == "__main__":
         raise
     except Exception as exc:
         import traceback
-        print(f"[FAIL] GGUF export exception: {type(exc).__name__}: {exc}")
+        print(f"[ERROR] GGUF export exception: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         raise SystemExit(2)
 PY
 
 chmod 600 "${RUN_DIR}/train_bot.py" "${RUN_DIR}/export_gguf.py"
 
-log 'Validating the JSONL dataset before loading any model weights...'
-if ! run_streamed "${RUN_DIR}/dataset-validation.log" "$VENV_PY" "${RUN_DIR}/train_bot.py" --validate-only; then
-    die 'Dataset validation failed. Review dataset-validation.log.'
+log 'Validating the dataset before training...'
+if ! run_streamed dataset-validation "$VENV_PY" "${RUN_DIR}/train_bot.py" --validate-only; then
+    die "Dataset validation failed. Review $EVENT_LOG."
 fi
-log 'Compiling generated Python programs...'
-if ! "$VENV_PY" -m py_compile "${RUN_DIR}/train_bot.py" "${RUN_DIR}/export_gguf.py"; then
+log 'Checking generated training and export programs...'
+if ! run_streamed preflight "$VENV_PY" -m py_compile "${RUN_DIR}/train_bot.py" "${RUN_DIR}/export_gguf.py"; then
     die 'Generated Python program compilation failed.'
 fi
 
 ui_section 'Stage 1/3 | Fine-tune model'
+notice "All stage output will be saved to $EVENT_LOG"
+log "Training run $RUN_CODE started for '$BOT_NAME'."
 BUILD_STATUS='TRAINING'
-if ! run_streamed "$TRAIN_LOG" "$VENV_PY" "${RUN_DIR}/train_bot.py"; then
-    die 'Training failed. Review training.log; any checkpoint/adapter already written has been preserved.'
+if ! run_streamed training "$VENV_PY" "${RUN_DIR}/train_bot.py"; then
+    die "Training failed. Review $EVENT_LOG; any checkpoint/adapter already written has been preserved."
 fi
 [[ -s "${ADAPTER_DIR}/adapter_config.json" ]] || die 'Training process ended without a verified adapter_config.json.'
 BUILD_STATUS='TRAINING COMPLETE'
+success "Training completed for run $RUN_CODE."
 
 ui_section 'Stage 2/3 | Merge adapter and export GGUF'
+notice "All stage output will be saved to $EVENT_LOG"
+log 'Merging the adapter and exporting GGUF.'
 BUILD_STATUS='GGUF EXPORT'
-if ! run_streamed "$EXPORT_LOG" "$VENV_PY" "${RUN_DIR}/export_gguf.py"; then
-    print_partial_success "Training completed and the LoRA adapter was preserved, but GGUF export failed. Review export.log. You can retry export without retraining by using the saved adapter at ${ADAPTER_DIR}, once the export issue is corrected."
+if ! run_streamed gguf-export "$VENV_PY" "${RUN_DIR}/export_gguf.py"; then
+    print_partial_success "Training completed and the LoRA adapter was preserved, but GGUF export failed. Review $EVENT_LOG. You can retry export without retraining by using the saved adapter at ${ADAPTER_DIR}, once the export issue is corrected."
 fi
 
-# Read the final export directory/vision marker from the completed exporter log.
-GGUF_OUTPUT_DIR="$(sed -n 's/^AARFORGE_GGUF_OUTPUT_DIR=//p' "$EXPORT_LOG" | tail -n 1)"
-GGUF_HAS_MMPROJ="$(sed -n 's/^AARFORGE_GGUF_HAS_MMPROJ=//p' "$EXPORT_LOG" | tail -n 1)"
-[[ -n "$GGUF_OUTPUT_DIR" && -d "$GGUF_OUTPUT_DIR" ]] || print_partial_success 'GGUF export ran but did not report a usable output directory. The adapter and export log are preserved.'
+# Read the final export directory/vision marker from the JSONL event log.
+GGUF_OUTPUT_DIR="$(read_log_marker AARFORGE_GGUF_OUTPUT_DIR)"
+GGUF_HAS_MMPROJ="$(read_log_marker AARFORGE_GGUF_HAS_MMPROJ)"
+[[ -n "$GGUF_OUTPUT_DIR" && -d "$GGUF_OUTPUT_DIR" ]] || print_partial_success "GGUF export ran but did not report a usable output directory. The adapter and run log are preserved at $EVENT_LOG."
 export AARFORGE_GGUF_DIR="$GGUF_OUTPUT_DIR"
 GGUF_DIR="$GGUF_OUTPUT_DIR"
 
 # Read the main-file selection from the manifest; never pick an mmproj by glob order.
-GGUF_MAIN_FILE="$("$VENV_PY" - "$GGUF_OUTPUT_DIR/export_manifest.json" <<'PY'
+cat > "${RUN_DIR}/read_manifest.py" <<'PY'
 import json, sys
 from pathlib import Path
 manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 files = manifest.get("main_model_files", [])
 if not files:
     raise SystemExit("Manifest contains no selected main model GGUF.")
-print(files[0])
+print(f"AARFORGE_MAIN_MODEL_FILE={files[0]}")
+print(f"AARFORGE_MMPROJ_FILES={';'.join(manifest.get('mmproj_files', []))}")
 PY
-)" || print_partial_success 'The GGUF export manifest is missing or invalid. Training/export files have been preserved.'
-MMPROJ_FILES_TEXT="$("$VENV_PY" - "$GGUF_OUTPUT_DIR/export_manifest.json" <<'PY'
-import json, sys
-from pathlib import Path
-manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-print(";".join(manifest.get("mmproj_files", [])))
-PY
-)" || print_partial_success 'Could not read the GGUF manifest. The exported files remain on disk.'
+if ! run_streamed gguf-manifest "$VENV_PY" "${RUN_DIR}/read_manifest.py" "$GGUF_OUTPUT_DIR/export_manifest.json"; then
+    print_partial_success "The GGUF export manifest is missing or invalid. Review $EVENT_LOG; training/export files have been preserved."
+fi
+GGUF_MAIN_FILE="$(read_log_marker AARFORGE_MAIN_MODEL_FILE gguf-manifest)"
+MMPROJ_FILES_TEXT="$(read_log_marker AARFORGE_MMPROJ_FILES gguf-manifest)"
+[[ -n "$GGUF_MAIN_FILE" ]] || print_partial_success "Could not read the main GGUF file from the manifest. Review $EVENT_LOG."
 
 # Create an Ollama Modelfile from the exact main model selection. For split GGUF,
 # stage only the selected shards in a separate folder so the wildcard cannot
@@ -1049,15 +1158,17 @@ if len(main_files) == 1 and not from_path.is_file():
     raise SystemExit(f"Modelfile FROM target does not exist: {from_path}")
 if len(main_files) > 1 and not list(from_path.parent.glob(from_path.name)):
     raise SystemExit(f"Modelfile shard pattern matched no files: {from_path}")
-print(f"[+] Wrote Ollama Modelfile: {modelfile}")
-print(f"[+] Modelfile FROM: {from_value}")
+print(f"[INFO] Wrote Ollama Modelfile: {modelfile}")
+print(f"[INFO] Modelfile FROM: {from_value}")
 PY
 
-if ! "$VENV_PY" "${RUN_DIR}/write_modelfile.py"; then
+if ! run_streamed modelfile "$VENV_PY" "${RUN_DIR}/write_modelfile.py"; then
     print_partial_success 'Training and GGUF export completed, but AarForge could not produce a valid Ollama Modelfile. All artifacts are preserved.'
 fi
 
 ui_section 'Stage 3/3 | Deploy with Ollama'
+notice "All stage output will be saved to $EVENT_LOG"
+log 'Preparing and verifying the Ollama model.'
 BUILD_STATUS='OLLAMA DEPLOYMENT'
 
 if (( ! OLLAMA_READY )); then
@@ -1086,14 +1197,13 @@ if ollama show "$STAGING_MODEL" >/dev/null 2>&1; then
 fi
 
 log "Creating temporary Ollama model '$STAGING_MODEL' for verification..."
-if ! run_streamed "$DEPLOY_LOG" ollama create "$STAGING_MODEL" -f "${RUN_DIR}/Modelfile"; then
+if ! run_streamed ollama-deploy ollama create "$STAGING_MODEL" -f "${RUN_DIR}/Modelfile"; then
     DEPLOYMENT_STATUS='failed: Ollama rejected the staged model import'
-    DEPLOY_ERROR="$(tail -n 35 "$DEPLOY_LOG" 2>/dev/null || true)"
-    print_partial_success "Training and GGUF export succeeded, but Ollama could not import the model. This usually indicates an unsupported model architecture, GGUF metadata incompatibility, or a missing multimodal projector integration. Ollama output follows:\n${DEPLOY_ERROR}"
+    print_partial_success "Training and GGUF export succeeded, but Ollama could not import the model. Review $EVENT_LOG for the captured output."
 fi
 if ! ollama show "$STAGING_MODEL" >/dev/null 2>&1; then
     DEPLOYMENT_STATUS='failed: staged model could not be verified with ollama show'
-    print_partial_success "Ollama create returned, but the staging model could not be verified. The original Ollama model (if any) was not intentionally removed. Review ollama-deploy.log."
+    print_partial_success "Ollama create returned, but the staging model could not be verified. The original Ollama model (if any) was not intentionally removed. Review $EVENT_LOG."
 fi
 
 # Detect a model created by another process during training.
@@ -1110,7 +1220,7 @@ if ollama show "$BOT_NAME" >/dev/null 2>&1; then
         print_partial_success "The staging model '$STAGING_MODEL' is ready, but the existing model '$BOT_NAME' was not approved for replacement."
     fi
     log "Backing up existing Ollama model '$BOT_NAME' as '$BACKUP_MODEL'..."
-    if ! ollama cp "$BOT_NAME" "$BACKUP_MODEL" >>"$DEPLOY_LOG" 2>&1 || ! ollama show "$BACKUP_MODEL" >/dev/null 2>&1; then
+    if ! run_streamed ollama-backup ollama cp "$BOT_NAME" "$BACKUP_MODEL" || ! ollama show "$BACKUP_MODEL" >/dev/null 2>&1; then
         DEPLOYMENT_STATUS='staged only: existing model could not be backed up safely'
         print_partial_success "AarForge created '$STAGING_MODEL', but could not verify a backup of existing '$BOT_NAME'. The existing model was left untouched."
     fi
@@ -1119,34 +1229,34 @@ if ollama show "$BOT_NAME" >/dev/null 2>&1; then
     # Remove the old tag only after a verified backup exists; then promotion is
     # unambiguous and a failed copy can be restored from that backup.
     log "Removing old model '$BOT_NAME' after verifying its backup..."
-    if ! ollama rm "$BOT_NAME" >>"$DEPLOY_LOG" 2>&1; then
+    if ! run_streamed ollama-remove ollama rm "$BOT_NAME"; then
         DEPLOYMENT_STATUS='staged only: could not safely remove existing model after backup'
-        print_partial_success "A backup '$BACKUP_MODEL' was made, but Ollama would not remove the existing '$BOT_NAME'. The original model was not deliberately overwritten; review ollama-deploy.log."
+        print_partial_success "A backup '$BACKUP_MODEL' was made, but Ollama would not remove the existing '$BOT_NAME'. The original model was not deliberately overwritten; review $EVENT_LOG."
     fi
 fi
 
 log "Promoting verified staging model '$STAGING_MODEL' to '$BOT_NAME'..."
-if ! ollama cp "$STAGING_MODEL" "$BOT_NAME" >>"$DEPLOY_LOG" 2>&1 || ! ollama show "$BOT_NAME" >/dev/null 2>&1; then
+if ! run_streamed ollama-promote ollama cp "$STAGING_MODEL" "$BOT_NAME" || ! ollama show "$BOT_NAME" >/dev/null 2>&1; then
     if (( HAD_OLD_MODEL )); then
         warn 'Promotion failed. Attempting to restore the previous Ollama model from its backup...'
-        if ollama cp "$BACKUP_MODEL" "$BOT_NAME" >>"$DEPLOY_LOG" 2>&1 && ollama show "$BOT_NAME" >/dev/null 2>&1; then
+        if run_streamed ollama-restore ollama cp "$BACKUP_MODEL" "$BOT_NAME" && ollama show "$BOT_NAME" >/dev/null 2>&1; then
             info "Previous Ollama model '$BOT_NAME' was restored. Backup copy '$BACKUP_MODEL' is retained until you remove it."
         else
             warn "Automatic restoration failed. The backup model '$BACKUP_MODEL' is preserved; do not delete it."
         fi
     fi
     DEPLOYMENT_STATUS='failed: staged model was not promoted to the final name'
-    print_partial_success "The staging model was created, but promotion to '$BOT_NAME' failed. Existing model backup status is recorded in ollama-deploy.log."
+    print_partial_success "The staging model was created, but promotion to '$BOT_NAME' failed. Review $EVENT_LOG."
 fi
 
 if (( HAD_OLD_MODEL )); then
-    if ollama rm "$BACKUP_MODEL" >>"$DEPLOY_LOG" 2>&1; then
+    if run_streamed ollama-remove-backup ollama rm "$BACKUP_MODEL"; then
         info "Removed temporary backup '$BACKUP_MODEL' after successful promotion."
     else
         warn "The new model is active, but temporary backup '$BACKUP_MODEL' could not be removed. Remove it manually after verification."
     fi
 fi
-if ollama rm "$STAGING_MODEL" >>"$DEPLOY_LOG" 2>&1; then
+if run_streamed ollama-cleanup ollama rm "$STAGING_MODEL"; then
     info "Removed temporary staging model '$STAGING_MODEL'."
 else
     warn "Model deployment succeeded, but temporary staging model '$STAGING_MODEL' remains. Remove it manually after verification."
@@ -1157,6 +1267,7 @@ BUILD_STATUS='SUCCESS'
 write_report "$BUILD_STATUS" 'Training, adapter verification, GGUF export, and Ollama model creation/metadata verification completed successfully. Inference generation was not smoke-tested; run the model once before relying on it. Review export_manifest.json for additional GGUF files and vision projector sidecars.'
 ui_header 'Build complete'
 success 'Training, export, and Ollama deployment completed.'
+printf 'Run code:       %s\n' "$RUN_CODE"
 printf 'Model:          ollama run %s\n' "$BOT_NAME"
 printf '%s\n' 'Ollama metadata was verified; inference generation was not smoke-tested.'
 printf 'Run artifacts:  %s\n' "$RUN_DIR"
@@ -1166,4 +1277,4 @@ if [[ -n "$MMPROJ_FILES_TEXT" ]]; then
     printf 'Vision files:   %s\n' "$MMPROJ_FILES_TEXT"
     warn 'Ollama import was attempted without a separate mmproj directive; vision input may not be available through Ollama.'
 fi
-printf 'Build report:   %s/BUILD_REPORT.txt\n' "$RUN_DIR"
+printf 'Run report:     %s/report.json\n' "$RUN_LOG_DIR"
