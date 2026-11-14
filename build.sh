@@ -17,9 +17,48 @@ TRAIN_LOG=""
 EXPORT_LOG=""
 DEPLOY_LOG=""
 
-log()  { printf '[+] %s\n' "$*"; }
-info() { printf '[i] %s\n' "$*"; }
-warn() { printf '[!] %s\n' "$*" >&2; }
+UI_RESET=""
+UI_BOLD=""
+UI_GREEN=""
+UI_BLUE=""
+UI_YELLOW=""
+UI_RED=""
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
+    UI_RESET=$'\033[0m'
+    UI_BOLD=$'\033[1m'
+    UI_GREEN=$'\033[32m'
+    UI_BLUE=$'\033[34m'
+    UI_YELLOW=$'\033[33m'
+    UI_RED=$'\033[31m'
+fi
+
+ui_header() {
+    printf '\n%bAarForge%b  %s\n' "$UI_BOLD" "$UI_RESET" "$1"
+    printf '%s\n' '------------------------------------------------------------'
+    [[ -z "${2:-}" ]] || printf '%s\n' "$2"
+}
+
+ui_section() { printf '\n%b%s%b\n' "$UI_BOLD" "$*" "$UI_RESET"; }
+log()     { printf '%b[+]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
+success() { printf '%b[OK]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
+info()    { printf '%b[INFO]%b %s\n' "$UI_BLUE" "$UI_RESET" "$*"; }
+warn()    { printf '%b[WARN]%b %s\n' "$UI_YELLOW" "$UI_RESET" "$*" >&2; }
+error()   { printf '%b[FAIL]%b %s\n' "$UI_RED" "$UI_RESET" "$*" >&2; }
+
+confirm() {
+    local prompt="$1" default="${2:-no}" answer suffix
+    if [[ "$default" == yes ]]; then suffix='[Y/n]'; else suffix='[y/N]'; fi
+    while :; do
+        answer=''
+        read -r -p "? $prompt $suffix " answer || answer=''
+        case "${answer,,}" in
+            '') if [[ "$default" == yes ]]; then return 0; else return 1; fi ;;
+            y|yes) return 0 ;;
+            n|no) return 1 ;;
+            *) info 'Please answer y or n.' ;;
+        esac
+    done
+}
 
 print_artifact_location() {
     [[ -n "$RUN_DIR" ]] && printf '    Run artifacts: %s\n' "$RUN_DIR" >&2
@@ -31,7 +70,8 @@ print_artifact_location() {
 
 die() {
     local message="$*"
-    printf '\n[-] %s\n' "$message" >&2
+    printf '\n' >&2
+    error "$message"
     if [[ -n "$RUN_DIR" && -d "$RUN_DIR" ]]; then
         printf '    The run directory and available logs have been preserved.\n' >&2
         print_artifact_location
@@ -42,7 +82,8 @@ die() {
 on_error() {
     local rc=$?
     trap - ERR
-    printf '\n[-] Unexpected shell error (exit %s) near line %s.\n' "$rc" "${BASH_LINENO[0]:-unknown}" >&2
+    printf '\n' >&2
+    error "Unexpected shell error (exit $rc) near line ${BASH_LINENO[0]:-unknown}."
     printf '    Build status: %s\n' "$BUILD_STATUS" >&2
     print_artifact_location
     exit "$rc"
@@ -81,19 +122,19 @@ select_jsonl_dataset() {
     while :; do
         if (( redraw )) && [[ -t 1 ]]; then printf '\033[2J\033[H'; fi
         current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
-        printf '\nDataset location: %s\n' "$current"
+        ui_section "Dataset: $current"
         printf '  0) Enter a dataset path manually\n'
         printf '  u) Go to parent directory\n'
         mapfile -d '' -t dirs < <(find "$current" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
         mapfile -d '' -t files < <(find "$current" -mindepth 1 -maxdepth 1 -type f -iname '*.jsonl' -readable -print0 2>/dev/null | sort -z)
         for i in "${!dirs[@]}"; do printf '  d%d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; done
         for i in "${!files[@]}"; do printf '  f%d) %s\n' "$((i+1))" "$(basename -- "${files[$i]}")"; done
-        read -r -p 'Choose a folder/file (e.g. d1, f1, u, 0): ' choice || die 'No dataset selected.'
+        read -r -p '? Choose a folder/file (d1, f1, u, 0): ' choice || die 'No dataset selected.'
         redraw=1
         case "$choice" in
             u|U) current="$(dirname -- "$current")" ;;
             0)
-                read -r -p 'Enter path to .jsonl dataset: ' entry || true
+                read -r -p '? Dataset path: ' entry || true
                 [[ -n "$entry" ]] || { info 'No path entered.'; continue; }
                 entry="$(expand_home "$entry")"
                 [[ -f "$entry" && -r "$entry" && "${entry,,}" == *.jsonl ]] || { info 'Path must be a readable .jsonl file.'; continue; }
@@ -124,7 +165,7 @@ select_jsonl_dataset() {
 
 prompt_value() {
     local var_name="$1" prompt="$2" default="$3" value=""
-    read -r -p "$prompt [$default]: " value || true
+    read -r -p "? $prompt [$default]: " value || true
     printf -v "$var_name" '%s' "${value:-$default}"
 }
 
@@ -185,9 +226,7 @@ print_partial_success() {
     local reason="$1"
     BUILD_STATUS="PARTIAL SUCCESS"
     write_report "$BUILD_STATUS" "$reason"
-    printf '\n==================================================\n'
-    printf '%s\n' '             AARFORGE: PARTIAL SUCCESS            '
-    printf '%s\n' '=================================================='
+    ui_header 'Build finished with preserved artifacts'
     warn "$reason"
     printf 'Run artifacts: %s\n' "$RUN_DIR"
     [[ -d "${ADAPTER_DIR:-/nonexistent}" ]] && printf 'LoRA adapter:  %s\n' "$ADAPTER_DIR"
@@ -209,9 +248,7 @@ print_partial_success() {
     exit 0
 }
 
-printf '%s\n' '=================================================='
-printf '%s\n' '               AARFORGE BUILD WIZARD              '
-printf '%s\n' '=================================================='
+ui_header 'Build' 'Fine-tune a model, export GGUF, and optionally deploy with Ollama.'
 
 [[ "$(uname -s)" == "Linux" ]] || die 'This build script currently supports Linux only.'
 [[ -x "$VENV_PY" ]] || die "Virtual environment not found at $SCRIPT_DIR/.venv. Run ./install.sh first."
@@ -224,6 +261,7 @@ exec 9>"${SCRIPT_DIR}/.aarforge-build.lock"
 flock -n 9 || die 'Another AarForge build is already running in this workspace.'
 
 # Confirm the virtual environment is internally consistent. Unsloth is imported first.
+ui_section 'System check'
 if ! "$VENV_PY" - <<'PY'
 import importlib.util
 import sys
@@ -265,15 +303,14 @@ else
 fi
 
 BOT_NAME=""
+ui_section 'Model and dataset'
 load_setting bot_name 'my_custom_bot' SETTINGS_BOT_NAME
 prompt_value BOT_NAME 'Enter your model name (lowercase letters, digits, . _ -)' "$SETTINGS_BOT_NAME"
 [[ "$BOT_NAME" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die 'Invalid model name. Use 1-64 lowercase letters/digits and . _ -; the first character must be alphanumeric.'
 REPLACE_MODEL=0
 if (( OLLAMA_READY )); then
     if ollama show "$BOT_NAME" >/dev/null 2>&1; then
-        replace_model=''
-        read -r -p "Ollama model '$BOT_NAME' already exists. Replace it only after a staged model is verified? [y/N]: " replace_model || true
-        if [[ "${replace_model,,}" == 'y' || "${replace_model,,}" == 'yes' ]]; then
+        if confirm "Replace Ollama model '$BOT_NAME' after the new model is verified?" no; then
             REPLACE_MODEL=1
         else
             die "Existing Ollama model '$BOT_NAME' will be preserved. Rerun with a different model name."
@@ -281,22 +318,18 @@ if (( OLLAMA_READY )); then
     fi
 fi
 
-printf '\nExpected dataset format (one JSON object per line):\n'
-printf '%s\n' '  {"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}'
-printf '%s\n' 'Allowed roles: system, user, assistant. Each conversation must start with exactly one system message, alternate user/assistant turns, and end with assistant.'
+info 'Dataset: JSONL with a messages array; roles must alternate system, user, assistant.'
 load_setting dataset_path '' SETTINGS_DATASET_PATH
 DATASET_INPUT=""
 if [[ -n "$SETTINGS_DATASET_PATH" && -f "$SETTINGS_DATASET_PATH" && -r "$SETTINGS_DATASET_PATH" && "${SETTINGS_DATASET_PATH,,}" == *.jsonl ]]; then
-    saved_dataset_choice=''
-    read -r -p "Use the previous dataset [$SETTINGS_DATASET_PATH]? [Y/n]: " saved_dataset_choice || true
-    if [[ "${saved_dataset_choice,,}" != n && "${saved_dataset_choice,,}" != no ]]; then
+    if confirm "Reuse the last dataset ($SETTINGS_DATASET_PATH)?" yes; then
         DATASET_INPUT="$SETTINGS_DATASET_PATH"
     fi
 elif [[ -n "$SETTINGS_DATASET_PATH" ]]; then
     info 'The previously selected dataset is unavailable; choose a dataset again.'
 fi
 if [[ -z "$DATASET_INPUT" ]]; then
-    printf '\nBrowse to the JSONL training dataset.\n'
+    info 'Choose a JSONL training dataset.'
     select_jsonl_dataset
     DATASET_INPUT="$SELECTED_PATH"
 fi
@@ -317,6 +350,7 @@ else
     die 'Base model must be a Hugging Face repo ID (org/model) or an existing local directory.'
 fi
 
+ui_section 'Training settings'
 TRAIN_EPOCHS=""
 load_setting training_epochs '3' SETTINGS_TRAIN_EPOCHS
 prompt_value TRAIN_EPOCHS 'Enter training epochs (positive integer)' "$SETTINGS_TRAIN_EPOCHS"
@@ -351,18 +385,29 @@ then
     die 'Invalid Ollama temperature.'
 fi
 
+ui_section 'Inference settings'
 MODEL_SYSTEM_PROMPT=""
 load_setting system_prompt "$DEFAULT_SYSTEM_PROMPT" SETTINGS_SYSTEM_PROMPT
-read -r -p "Enter the Ollama system prompt [$SETTINGS_SYSTEM_PROMPT]: " MODEL_SYSTEM_PROMPT || true
+read -r -p "? Ollama system prompt [$SETTINGS_SYSTEM_PROMPT]: " MODEL_SYSTEM_PROMPT || true
 MODEL_SYSTEM_PROMPT="${MODEL_SYSTEM_PROMPT:-$SETTINGS_SYSTEM_PROMPT}"
 [[ "$MODEL_SYSTEM_PROMPT" != *'"""'* ]] || die 'System prompt cannot contain the triple-quote delimiter (""") used by Ollama Modelfile syntax.'
 
+ui_section 'Review'
+printf '  Model:     %s\n' "$BOT_NAME"
+printf '  Base:      %s\n' "$BASE_MODEL"
+printf '  Dataset:   %s\n' "$DATASET_SOURCE"
+if (( TRAIN_STEPS > 0 )); then
+    printf '  Training:  %s step(s)\n' "$TRAIN_STEPS"
+else
+    printf '  Training:  %s epoch(s)\n' "$TRAIN_EPOCHS"
+fi
+printf '  Context:   %s tokens\n' "$MAX_SEQ_LENGTH"
+
+ui_section 'Prepare run'
 DATASET_COPY="${SCRIPT_DIR}/${BOT_NAME}_dataset.jsonl"
 if [[ "$DATASET_SOURCE" != "$(realpath -m -- "$DATASET_COPY")" ]]; then
     if [[ -e "$DATASET_COPY" ]]; then
-        overwrite_dataset=''
-        read -r -p "$DATASET_COPY already exists. Replace it? [y/N]: " overwrite_dataset || true
-        [[ "${overwrite_dataset,,}" == 'y' || "${overwrite_dataset,,}" == 'yes' ]] || die 'Dataset copy was not replaced. Choose another bot name or remove the existing copy.'
+        confirm "Replace existing dataset copy ($DATASET_COPY)?" no || die 'Dataset copy was not replaced. Choose another bot name or remove the existing copy.'
     fi
     cp -- "$DATASET_SOURCE" "$DATASET_COPY"
 fi
@@ -438,7 +483,7 @@ then
 fi
 
 log "Run directory: $RUN_DIR"
-log 'Generating training and export programs...'
+log 'Preparing training and export programs...'
 
 cat > "${RUN_DIR}/train_bot.py" <<'PY'
 #!/usr/bin/env python3
@@ -456,7 +501,7 @@ ALLOWED_ROLES = {"system", "user", "assistant"}
 
 
 def fail(message: str) -> NoReturn:
-    raise SystemExit(f"[-] {message}")
+    raise SystemExit(f"[FAIL] {message}")
 
 
 def load_and_validate_dataset(path: Path) -> list[dict[str, Any]]:
@@ -520,7 +565,7 @@ def load_and_validate_dataset(path: Path) -> list[dict[str, Any]]:
     if not records:
         fail("Dataset contains no non-empty JSONL records.")
     if len(records) == 1:
-        print("[!] Dataset contains only one conversation. Training can run, but more diverse examples are strongly recommended.")
+        print("[WARN] Dataset contains only one conversation. Training can run, but more diverse examples are strongly recommended.")
     return records
 
 
@@ -744,7 +789,7 @@ SHARD_RE = re.compile(r"^(?P<stem>.+)-(?P<index>[0-9]{5})-of-(?P<total>[0-9]{5})
 
 
 def fail(message: str) -> None:
-    raise SystemExit(f"[-] {message}")
+    raise SystemExit(f"[FAIL] {message}")
 
 
 def validate_gguf(path: Path) -> None:
@@ -879,7 +924,7 @@ def main() -> None:
         for path in mmproj_files:
             print(f"    MMPROJ: {path} ({path.stat().st_size:,} bytes)")
     if other_main_files:
-        print(f"[i] Additional non-selected GGUF file(s) were retained: {len(other_main_files)}")
+        print(f"[INFO] Additional non-selected GGUF file(s) were retained: {len(other_main_files)}")
         for path in other_main_files:
             print(f"    OTHER: {path}")
     print(f"[+] Export manifest: {chosen_dir / 'export_manifest.json'}")
@@ -895,7 +940,7 @@ if __name__ == "__main__":
         raise
     except Exception as exc:
         import traceback
-        print(f"[-] GGUF export exception: {type(exc).__name__}: {exc}")
+        print(f"[FAIL] GGUF export exception: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         raise SystemExit(2)
 PY
@@ -911,9 +956,7 @@ if ! "$VENV_PY" -m py_compile "${RUN_DIR}/train_bot.py" "${RUN_DIR}/export_gguf.
     die 'Generated Python program compilation failed.'
 fi
 
-printf '\n==================================================\n'
-printf '%s\n' '             STAGE 1: MODEL TRAINING              '
-printf '%s\n' '=================================================='
+ui_section 'Stage 1/3 | Fine-tune model'
 BUILD_STATUS='TRAINING'
 if ! run_streamed "$TRAIN_LOG" "$VENV_PY" "${RUN_DIR}/train_bot.py"; then
     die 'Training failed. Review training.log; any checkpoint/adapter already written has been preserved.'
@@ -921,9 +964,7 @@ fi
 [[ -s "${ADAPTER_DIR}/adapter_config.json" ]] || die 'Training process ended without a verified adapter_config.json.'
 BUILD_STATUS='TRAINING COMPLETE'
 
-printf '\n==================================================\n'
-printf '%s\n' '      STAGE 2: MERGE ADAPTER & GGUF EXPORT       '
-printf '%s\n' '=================================================='
+ui_section 'Stage 2/3 | Merge adapter and export GGUF'
 BUILD_STATUS='GGUF EXPORT'
 if ! run_streamed "$EXPORT_LOG" "$VENV_PY" "${RUN_DIR}/export_gguf.py"; then
     print_partial_success "Training completed and the LoRA adapter was preserved, but GGUF export failed. Review export.log. You can retry export without retraining by using the saved adapter at ${ADAPTER_DIR}, once the export issue is corrected."
@@ -1016,9 +1057,7 @@ if ! "$VENV_PY" "${RUN_DIR}/write_modelfile.py"; then
     print_partial_success 'Training and GGUF export completed, but AarForge could not produce a valid Ollama Modelfile. All artifacts are preserved.'
 fi
 
-printf '\n==================================================\n'
-printf '%s\n' '           STAGE 3: OLLAMA MODEL                  '
-printf '%s\n' '=================================================='
+ui_section 'Stage 3/3 | Deploy with Ollama'
 BUILD_STATUS='OLLAMA DEPLOYMENT'
 
 if (( ! OLLAMA_READY )); then
@@ -1027,14 +1066,12 @@ if (( ! OLLAMA_READY )); then
 fi
 
 if [[ "$GGUF_HAS_MMPROJ" == 'yes' ]]; then
-    printf '\n[!] MULTIMODAL MODEL NOTICE\n'
+    warn 'Multimodal model notice'
     printf '%s\n' 'This export contains a separate mmproj GGUF vision projector.'
     printf '%s\n' 'The Modelfile generated here references only the main GGUF. A normal Ollama GGUF import does not provide a separate Modelfile directive for attaching this projector.'
     printf '%s\n' 'The model may therefore import as text-only, or Ollama may reject the architecture. The mmproj file is preserved for llama.cpp multimodal inference.'
     printf '%s\n' 'For llama.cpp, use the main GGUF together with --mmproj and llama-mtmd-cli.'
-    import_text_only=''
-    read -r -p 'Attempt an Ollama import of the main GGUF as a TEXT-ONLY model anyway? [y/N]: ' import_text_only || true
-    if [[ "${import_text_only,,}" != 'y' && "${import_text_only,,}" != 'yes' ]]; then
+    if ! confirm 'Attempt a text-only Ollama import despite the separate vision projector?' no; then
         DEPLOYMENT_STATUS='skipped by user: multimodal mmproj cannot be attached through this Modelfile workflow'
         print_partial_success "Training and GGUF export succeeded. Ollama deployment was skipped by choice because a separate vision projector was detected. Main GGUF and mmproj files are both preserved."
     fi
@@ -1118,9 +1155,8 @@ fi
 DEPLOYMENT_STATUS='success: final Ollama model was created and verified'
 BUILD_STATUS='SUCCESS'
 write_report "$BUILD_STATUS" 'Training, adapter verification, GGUF export, and Ollama model creation/metadata verification completed successfully. Inference generation was not smoke-tested; run the model once before relying on it. Review export_manifest.json for additional GGUF files and vision projector sidecars.'
-printf '\n==================================================\n'
-printf '%s\n' '          AARFORGE BUILD COMPLETE                 '
-printf '%s\n' '=================================================='
+ui_header 'Build complete'
+success 'Training, export, and Ollama deployment completed.'
 printf 'Model:          ollama run %s\n' "$BOT_NAME"
 printf '%s\n' 'Ollama metadata was verified; inference generation was not smoke-tested.'
 printf 'Run artifacts:  %s\n' "$RUN_DIR"
@@ -1128,7 +1164,6 @@ printf 'Dataset copy:   %s\n' "$DATASET_COPY"
 printf 'Main GGUF:      %s\n' "$GGUF_MAIN_FILE"
 if [[ -n "$MMPROJ_FILES_TEXT" ]]; then
     printf 'Vision files:   %s\n' "$MMPROJ_FILES_TEXT"
-    printf '%s\n' '[!] Ollama import was attempted without a separate mmproj directive; vision input may not be available through Ollama.'
+    warn 'Ollama import was attempted without a separate mmproj directive; vision input may not be available through Ollama.'
 fi
 printf 'Build report:   %s/BUILD_REPORT.txt\n' "$RUN_DIR"
-printf '%s\n' '=================================================='

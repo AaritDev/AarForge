@@ -9,12 +9,54 @@ DEFAULT_MODEL="unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
 # metadata constrains the compatible torch/transformers/trl version ranges.
 UNSLOTH_VERSION="2026.11.4"
 
-log()  { printf '[+] %s\n' "$*"; }
-info() { printf '[i] %s\n' "$*"; }
-die()  { printf '[-] %s\n' "$*" >&2; exit 1; }
+UI_RESET=""
+UI_BOLD=""
+UI_GREEN=""
+UI_BLUE=""
+UI_YELLOW=""
+UI_RED=""
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
+    UI_RESET=$'\033[0m'
+    UI_BOLD=$'\033[1m'
+    UI_GREEN=$'\033[32m'
+    UI_BLUE=$'\033[34m'
+    UI_YELLOW=$'\033[33m'
+    UI_RED=$'\033[31m'
+fi
+
+ui_header() {
+    printf '\n%bAarForge%b  %s\n' "$UI_BOLD" "$UI_RESET" "$1"
+    printf '%s\n' '------------------------------------------------------------'
+    [[ -z "${2:-}" ]] || printf '%s\n' "$2"
+}
+
+ui_section() { printf '\n%b%s%b\n' "$UI_BOLD" "$*" "$UI_RESET"; }
+log()     { printf '%b[+]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
+success() { printf '%b[OK]%b %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
+info()    { printf '%b[INFO]%b %s\n' "$UI_BLUE" "$UI_RESET" "$*"; }
+warn()    { printf '%b[WARN]%b %s\n' "$UI_YELLOW" "$UI_RESET" "$*" >&2; }
+error()   { printf '%b[FAIL]%b %s\n' "$UI_RED" "$UI_RESET" "$*" >&2; }
+die()     { printf '\n' >&2; error "$*"; exit 1; }
+
+confirm() {
+    local prompt="$1" default="${2:-no}" answer suffix
+    if [[ "$default" == yes ]]; then suffix='[Y/n]'; else suffix='[y/N]'; fi
+    while :; do
+        answer=''
+        read -r -p "? $prompt $suffix " answer || answer=''
+        case "${answer,,}" in
+            '') if [[ "$default" == yes ]]; then return 0; else return 1; fi ;;
+            y|yes) return 0 ;;
+            n|no) return 1 ;;
+            *) info 'Please answer y or n.' ;;
+        esac
+    done
+}
+
 on_error() {
     local rc=$?
-    printf '\n[-] Installation failed (exit %s) near line %s.\n' "$rc" "${BASH_LINENO[0]:-unknown}" >&2
+    printf '\n' >&2
+    error "Installation failed (exit $rc) near line ${BASH_LINENO[0]:-unknown}."
     exit "$rc"
 }
 trap on_error ERR
@@ -35,27 +77,27 @@ select_workspace_directory() {
     while :; do
         if (( redraw )) && [[ -t 1 ]]; then printf '\033[2J\033[H'; fi
         current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
-        printf '\nWorkspace location: %s\n' "$current"
+        ui_section "Workspace: $current"
         printf '  0) Use this directory\n'
         printf '  u) Go to parent directory\n'
         printf '  n) Create a new folder here\n'
         printf '  m) Enter a path manually\n'
         mapfile -d '' -t dirs < <(find "$current" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
         for i in "${!dirs[@]}"; do printf '  %d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; done
-        read -r -p 'Choose an option: ' choice || die 'No workspace directory selected.'
+        read -r -p '? Choose an option: ' choice || die 'No workspace directory selected.'
         redraw=1
         case "$choice" in
             0) SELECTED_PATH="$current"; return 0 ;;
             u|U) current="$(dirname -- "$current")" ;;
             n|N)
-                read -r -p 'New workspace folder name: ' entry || true
+                read -r -p '? New folder name: ' entry || true
                 [[ -n "$entry" ]] || { info 'Folder name cannot be empty.'; continue; }
                 mkdir -p -- "$current/$entry" || die "Cannot create workspace directory: $current/$entry"
                 SELECTED_PATH="$(cd -- "$current/$entry" && pwd -P)"
                 return 0
                 ;;
             m|M)
-                read -r -p 'Enter workspace path: ' entry || true
+                read -r -p '? Workspace path: ' entry || true
                 [[ -n "$entry" ]] || { info 'No path entered.'; continue; }
                 entry="$(expand_home "$entry")"
                 mkdir -p -- "$entry" || die "Cannot create workspace directory: $entry"
@@ -70,23 +112,18 @@ select_workspace_directory() {
     done
 }
 
-printf '%s\n' '=================================================='
-printf '%s\n' '               AARFORGE INSTALLER                 '
-printf '%s\n' '=================================================='
-printf '%s\n' 'Dataset format: one JSON object per line, with a top-level messages array.'
-printf '%s\n' '{"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}'
-printf '%s\n' 'Roles are system, user, and assistant; content must be strings.'
-printf '%s\n' '=================================================='
+ui_header 'Install' 'Set up an AarForge workspace and its training environment.'
 
 [[ "$(uname -s)" == Linux ]] || die 'This installer currently supports Linux only.'
 for tool in curl realpath; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required."; done
 # The host may have Python 3.14 or no suitable Python at all. Use UV to
 # provision a supported interpreter instead of rejecting the system Python.
 [[ -f "$SCRIPT_DIR/build.sh" ]] || die "build.sh must be present beside install.sh ($SCRIPT_DIR)."
-printf '\nSelect where AarForge should create/use its workspace.\n'
+ui_section 'Choose workspace'
 select_workspace_directory
 INSTALL_DIR="$SELECTED_PATH"
 
+ui_section 'System requirements'
 if ! command -v uv >/dev/null 2>&1; then
     log 'Installing Astral UV...'
     curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -101,6 +138,7 @@ else
     die 'UV installation completed but its executable could not be located.'
 fi
 
+ui_section 'Python environment'
 log 'Ensuring a supported Python 3.13 interpreter is available through UV...'
 "$UV_BIN" python install 3.13
 PYTHON_BIN="$("$UV_BIN" python find 3.13)" || die 'UV could not locate its Python 3.13 interpreter.'
@@ -126,10 +164,8 @@ if [[ -d .venv ]]; then
     fi
     EXISTING_VERSION="$("$EXISTING_VENV_PY" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
     if ! "$EXISTING_VENV_PY" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 14) else 1)'; then
-        printf '[!] Existing .venv uses unsupported Python %s. AarForge will use Python 3.13.\n' "$EXISTING_VERSION" >&2
-        answer=''
-        read -r -p 'Move the old .venv to a timestamped backup and create a new one? [y/N]: ' answer || true
-        [[ "${answer,,}" == y || "${answer,,}" == yes ]] || die 'Cannot continue with an unsupported existing virtual environment.'
+        warn "Existing .venv uses unsupported Python $EXISTING_VERSION. AarForge will use Python 3.13."
+        confirm 'Back up the old environment and create a new one?' no || die 'Cannot continue with an unsupported existing virtual environment.'
         BACKUP_VENV="$INSTALL_DIR/.venv.backup-$(date +%Y%m%dT%H%M%S)"
         mv -- .venv "$BACKUP_VENV"
         info "Preserved previous environment at $BACKUP_VENV"
@@ -144,6 +180,7 @@ fi
 VENV_PY="$INSTALL_DIR/.venv/bin/python"
 [[ -x "$VENV_PY" ]] || die 'Invalid .venv: .venv/bin/python is missing.'
 
+ui_section 'Install training dependencies'
 log "Installing Unsloth $UNSLOTH_VERSION and its declared compatible dependencies..."
 # Do not add an independent transformers>=5.18 requirement: it contradicts
 # the tested upper bounds in the selected Unsloth release metadata.
@@ -187,23 +224,22 @@ print(f"CUDA usable:  {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"GPU:          {torch.cuda.get_device_name(0)}")
 else:
-    print("[!] No usable CUDA GPU detected. Installation is valid, but this QLoRA workflow cannot train until CUDA is available.")
+    print("[WARN] No usable CUDA GPU detected. Installation is valid, but this QLoRA workflow cannot train until CUDA is available.")
 PY
 
 missing_tools=()
 for tool in git cmake make c++; do command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool"); done
 if ((${#missing_tools[@]})); then
-    printf '[!] Missing GGUF export build tools: %s\n' "${missing_tools[*]}" >&2
+    warn "Missing GGUF export build tools: ${missing_tools[*]}"
     printf '%s\n' '    Install git, cmake, make, and a C++ compiler using your distribution package manager.' >&2
 fi
 
 SOURCE_BUILD="$(realpath -e -- "$SCRIPT_DIR/build.sh")"
 TARGET_BUILD="$INSTALL_DIR/build.sh"
+ui_section 'Set up workspace files'
 if [[ "$SOURCE_BUILD" != "$TARGET_BUILD" ]]; then
     if [[ -e "$TARGET_BUILD" ]] && ! cmp -s -- "$SOURCE_BUILD" "$TARGET_BUILD"; then
-        answer=''
-        read -r -p "$TARGET_BUILD exists and differs. Replace it? [y/N]: " answer || true
-        [[ "${answer,,}" == y || "${answer,,}" == yes ]] || die 'Existing build.sh was not replaced. No installation completion will be reported.'
+        confirm "$TARGET_BUILD exists and differs. Replace it?" no || die 'Existing build.sh was not replaced. No installation completion will be reported.'
     fi
     cp -- "$SOURCE_BUILD" "$TARGET_BUILD"
 fi
@@ -258,27 +294,27 @@ else
     info 'Preserving existing .aarforge-settings.json.'
 fi
 
-read -r -p 'Download/cache the default model now? This may require several GB. [Y/n]: ' cache_model || true
-if [[ -z "${cache_model:-}" || "${cache_model,,}" == y || "${cache_model,,}" == yes ]]; then
+ui_section 'Optional model cache'
+if confirm "Download the default model now? This may require several GB." yes; then
     HF_BIN="$INSTALL_DIR/.venv/bin/hf"
     if [[ -x "$HF_BIN" ]]; then
         log "Downloading $DEFAULT_MODEL..."
         if "$HF_BIN" download "$DEFAULT_MODEL"; then
             log 'Default model cache completed.'
         else
-            printf '[!] Model pre-download failed; training can retry the download later.\n' >&2
+            warn 'Model pre-download failed; training can retry the download later.'
         fi
     else
-        printf '[!] Hugging Face CLI not found; the model will download during training.\n' >&2
+        warn 'Hugging Face CLI not found; the model will download during training.'
     fi
 else
     info 'Skipping default model download.'
 fi
 
-printf '\n==================================================\n'
-printf '%s\n' '             INSTALLATION COMPLETE                '
+ui_header 'Installation complete'
+success 'AarForge is ready to use.'
 printf 'Workspace:       %s\n' "$INSTALL_DIR"
 printf 'Virtual env:     %s\n' "$INSTALL_DIR/.venv"
 printf 'Sample dataset:  %s\n' "$SAMPLE_DATASET"
+printf 'Settings:        %s\n' "$SETTINGS_FILE"
 printf '%s\n' 'Next: cd into the workspace and run ./build.sh'
-printf '%s\n' '=================================================='

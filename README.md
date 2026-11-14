@@ -163,6 +163,8 @@ Build settings are saved in `.aarforge-settings.json` in the workspace and reuse
 
 When both training limits are configured, a positive step count takes precedence over epochs. The default run is therefore 60 steps; enter `0` steps to train for the configured number of epochs.
 
+Both scripts use the same terminal status labels and confirmation prompts. Press Enter to accept a displayed default; set `NO_COLOR=1` to disable terminal colors.
+
 **4. Wait for training and export**
 
 AarForge automatically handles the following pipeline:
