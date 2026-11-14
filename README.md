@@ -26,6 +26,10 @@
   </a>
 </p>
 
+<div align="center">
+  <img src="assets/README/main-demo.gif" alt="Demo of how the build works" width="400">
+</div>
+
 AarForge is an opinionated local LLM fine-tuning and deployment pipeline that transforms conversational JSONL datasets into fine-tuned GGUF models, ready to run locally with Ollama.
 
 Built around Unsloth, LoRA, 4-bit quantization, and Hugging Face tools, AarForge makes local LLM fine-tuning more accessible on NVIDIA consumer GPUs.
