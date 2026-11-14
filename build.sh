@@ -103,6 +103,16 @@ expand_home() {
     esac
 }
 
+clear_selector_lines() {
+    local lines="${1:-0}"
+    if (( lines > 0 )) && [[ -t 1 ]]; then
+        for ((i=0; i<lines; i++)); do
+            printf '\033[2K\r\033[1A'
+        done
+        printf '\033[2K\r'
+    fi
+}
+
 # Capture all command output in the per-run JSONL log without forwarding it to
 # the terminal. The caller reports concise stage progress separately.
 run_streamed() {
@@ -134,19 +144,24 @@ PY
 # Interactive JSONL selector. Folders can be browsed recursively; paths outside
 # the current tree can be entered manually.
 select_jsonl_dataset() {
-    local current="$PWD" choice entry i redraw=0
+    local current="$PWD" choice entry i redraw=0 menu_lines=0
     local -a dirs files
     while :; do
-        if (( redraw )) && [[ -t 1 ]]; then printf '\033[2J\033[H'; fi
+        if (( redraw )) && [[ -t 1 ]]; then clear_selector_lines "$menu_lines"; fi
         current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
+        menu_lines=0
         ui_section "Dataset: $current"
+        menu_lines=$((menu_lines + 1))
         printf '  0) Enter a dataset path manually\n'
+        menu_lines=$((menu_lines + 1))
         printf '  u) Go to parent directory\n'
+        menu_lines=$((menu_lines + 1))
         mapfile -d '' -t dirs < <(find "$current" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
         mapfile -d '' -t files < <(find "$current" -mindepth 1 -maxdepth 1 -type f -iname '*.jsonl' -readable -print0 2>/dev/null | sort -z)
-        for i in "${!dirs[@]}"; do printf '  d%d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; done
-        for i in "${!files[@]}"; do printf '  f%d) %s\n' "$((i+1))" "$(basename -- "${files[$i]}")"; done
+        for i in "${!dirs[@]}"; do printf '  d%d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; menu_lines=$((menu_lines + 1)); done
+        for i in "${!files[@]}"; do printf '  f%d) %s\n' "$((i+1))" "$(basename -- "${files[$i]}")"; menu_lines=$((menu_lines + 1)); done
         read -r -p '? Choose a folder/file (d1, f1, u, 0): ' choice || die 'No dataset selected.'
+        menu_lines=$((menu_lines + 1))
         redraw=1
         case "$choice" in
             u|U) current="$(dirname -- "$current")" ;;
@@ -1062,8 +1077,9 @@ if ! run_streamed preflight "$VENV_PY" -m py_compile "${RUN_DIR}/train_bot.py" "
 fi
 
 ui_section 'Stage 1/3 | Fine-tune model'
-notice "All stage output will be saved to $EVENT_LOG"
+notice "Training metrics will be shown live; the full log is saved to $EVENT_LOG"
 log "Training run $RUN_CODE started for '$BOT_NAME'."
+notice "Preparing the model and tokenizer can take several minutes on first run. Progress will update in place below."
 BUILD_STATUS='TRAINING'
 if ! run_streamed training "$VENV_PY" "${RUN_DIR}/train_bot.py"; then
     die "Training failed. Review $EVENT_LOG; any checkpoint/adapter already written has been preserved."
@@ -1073,7 +1089,7 @@ BUILD_STATUS='TRAINING COMPLETE'
 success "Training completed for run $RUN_CODE."
 
 ui_section 'Stage 2/3 | Merge adapter and export GGUF'
-notice "All stage output will be saved to $EVENT_LOG"
+notice "Export progress will be shown live; full logs are saved to $EVENT_LOG"
 log 'Merging the adapter and exporting GGUF.'
 BUILD_STATUS='GGUF EXPORT'
 if ! run_streamed gguf-export "$VENV_PY" "${RUN_DIR}/export_gguf.py"; then

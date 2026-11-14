@@ -70,22 +70,39 @@ expand_home() {
     esac
 }
 
+clear_selector_lines() {
+    local lines="${1:-0}"
+    if (( lines > 0 )) && [[ -t 1 ]]; then
+        for ((i=0; i<lines; i++)); do
+            printf '\033[2K\r\033[1A'
+        done
+        printf '\033[2K\r'
+    fi
+}
+
 # Interactive directory browser. Select the current directory with option 0;
 # navigate into a folder by choosing its number; choose .. to go up.
 select_workspace_directory() {
-    local current="$PWD" entry choice i redraw=0
+    local current="$PWD" entry choice i redraw=0 menu_lines=0
     local -a dirs
     while :; do
-        if (( redraw )) && [[ -t 1 ]]; then printf '\033[2J\033[H'; fi
+        if (( redraw )) && [[ -t 1 ]]; then clear_selector_lines "$menu_lines"; fi
         current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
+        menu_lines=0
         ui_section "Workspace: $current"
+        menu_lines=$((menu_lines + 1))
         printf '  0) Use this directory\n'
+        menu_lines=$((menu_lines + 1))
         printf '  u) Go to parent directory\n'
+        menu_lines=$((menu_lines + 1))
         printf '  n) Create a new folder here\n'
+        menu_lines=$((menu_lines + 1))
         printf '  m) Enter a path manually\n'
+        menu_lines=$((menu_lines + 1))
         mapfile -d '' -t dirs < <(find "$current" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
-        for i in "${!dirs[@]}"; do printf '  %d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; done
+        for i in "${!dirs[@]}"; do printf '  %d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; menu_lines=$((menu_lines + 1)); done
         read -r -p '? Choose an option: ' choice || die 'No workspace directory selected.'
+        menu_lines=$((menu_lines + 1))
         redraw=1
         case "$choice" in
             0) SELECTED_PATH="$current"; return 0 ;;
