@@ -224,7 +224,7 @@ AarForge/
 ### Installation
 
 <div align="center">
-  <video src="assets/README/install-demo.mp4" autoplay loop muted playsinline width="800"></video>
+  <video src="assets/README/install-demo.gif" autoplay loop muted playsinline width="800"></video>
 </div>
 
 ## Technology Stack
