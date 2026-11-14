@@ -151,7 +151,7 @@ select_jsonl_dataset() {
         current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
         menu_lines=0
         ui_section "Dataset: $current"
-        menu_lines=$((menu_lines + 1))
+        menu_lines=$((menu_lines + 2))
         printf '  0) Enter a dataset path manually\n'
         menu_lines=$((menu_lines + 1))
         printf '  u) Go to parent directory\n'

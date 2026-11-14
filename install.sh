@@ -90,7 +90,7 @@ select_workspace_directory() {
         current="$(cd -- "$current" 2>/dev/null && pwd -P)" || die "Cannot access directory: $current"
         menu_lines=0
         ui_section "Workspace: $current"
-        menu_lines=$((menu_lines + 1))
+        menu_lines=$((menu_lines + 2))
         printf '  0) Use this directory\n'
         menu_lines=$((menu_lines + 1))
         printf '  u) Go to parent directory\n'
