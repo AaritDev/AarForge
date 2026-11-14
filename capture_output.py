@@ -74,6 +74,7 @@ def main() -> int:
 
         excluded = (
             "unsloth:",
+            "unsloth zoo",
             "tokenizing",
             "filter:",
             "building labels",
@@ -116,7 +117,15 @@ def main() -> int:
     def emit_live(message: str) -> None:
         nonlocal last_visible_output, progress_line_active
         text = message.strip()
-        if not text or not is_live_line(text):
+        if not text:
+            return
+        if (
+            stage == "training"
+            and text.startswith("{")
+            and all(re.search(rf"['\"]{key}['\"]\s*:", text) for key in ("loss", "grad_norm", "learning_rate", "epoch"))
+        ):
+            return
+        if not is_live_line(text):
             return
         lower = text.lower()
         is_progress = bool(re.search(r"\b\d+%\s*\|", text)) or "it/s" in lower or "s/it" in lower or "epoch" in lower and "%" in text

@@ -165,7 +165,7 @@ Build settings are saved in `AarForge/settings.json` in the workspace and reused
 
 When both training limits are configured, a positive step count takes precedence over epochs. The default run is therefore 60 steps; enter `0` steps to train for the configured number of epochs.
 
-Each run gets a 16-bit numeric code and stores its artifacts in `AarForge/Runs/<code>` and its settings snapshot, JSON report, and JSONL event log in `AarForge/Logs/<code>`. The event log records timestamp, run code, stage, severity, and message. Only the 30 newest run-log folders are retained; older logs are removed automatically, while training artifacts are kept. Detailed output from Unsloth, model loading, export, and Ollama is captured in that JSONL log. Training metrics and loading/export progress are shown live; progress bars update in place, and a periodic notice appears if a stage is quiet for a while.
+Each run gets a 16-bit numeric code and stores its artifacts in `AarForge/Runs/<code>` and its settings snapshot, JSON report, and JSONL event log in `AarForge/Logs/<code>`. The event log records timestamp, run code, stage, severity, and message. Only the 30 newest run-log folders are retained; older logs are removed automatically, while training artifacts are kept. Detailed output from Unsloth, model loading, export, and Ollama is captured in that JSONL log. Loading/export progress is shown live and updates in place; full training metrics are preserved in the event log, and a periodic notice appears if a stage is quiet for a while.
 
 Both scripts use the same terminal status labels and confirmation prompts. Press Enter to accept a displayed default; set `NO_COLOR=1` to disable terminal colors.
 
