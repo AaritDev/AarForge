@@ -224,7 +224,7 @@ AarForge/
 ### Installation
 
 <div align="center">
-  <img src="assets/README/install-demo.gif" alt="Demo of how the install works" width="400">
+  <img src="assets/README/install-demo.gif" alt="Demo of how the install works" width="800">
 </div>
 
 ## Technology Stack
