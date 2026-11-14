@@ -99,7 +99,7 @@ select_workspace_directory() {
         menu_lines=$((menu_lines + 1))
         printf '  m) Enter a path manually\n'
         menu_lines=$((menu_lines + 1))
-        mapfile -d '' -t dirs < <(find "$current" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -z)
+        mapfile -d '' -t dirs < <(find "$current" -mindepth 1 -maxdepth 1 -type d ! -name unsloth_compiled_cache -print0 2>/dev/null | sort -z)
         for i in "${!dirs[@]}"; do printf '  %d) %s/\n' "$((i+1))" "$(basename -- "${dirs[$i]}")"; menu_lines=$((menu_lines + 1)); done
         read -r -p '? Choose an option: ' choice || die 'No workspace directory selected.'
         menu_lines=$((menu_lines + 1))
